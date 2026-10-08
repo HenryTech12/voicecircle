@@ -1,6 +1,6 @@
 # VoiceCircle API reference
 
-Base URL: `{API}/api/v1`. All endpoints except `/health`, `/auth/*`, `/webhooks/telnyx` and `/media/*` need `Authorization: Bearer <token>`.
+Base URL: `{API}/api/v1`. All endpoints except `/health`, `/auth/*`, `/webhooks/twilio/*` and `/media/*` need `Authorization: Bearer <token>`.
 
 Errors always look like `{"error": {"code": "not_found", "message": "Circle not found", "details": ...}}`.
 
@@ -86,7 +86,9 @@ Interactive docs: `http://localhost:8000/docs` (Swagger) and `/redoc`. The full 
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/webhooks/telnyx` | Telnyx Webhook |
+| `POST` | `/webhooks/twilio/voice` | Twilio Voice — Twilio fetches this when the senior answers. Returns the opening TwiML. |
+| `POST` | `/webhooks/twilio/gather` | Twilio Gather — Twilio posts the senior's speech (SpeechResult) here after each <Gather>. |
+| `POST` | `/webhooks/twilio/status` | Twilio Status — Twilio's status callback: fires once when the call ends (completed, busy, no-answer, failed, canceled). |
 
 ## Simulator
 
@@ -103,6 +105,14 @@ Interactive docs: `http://localhost:8000/docs` (Swagger) and `/redoc`. The full 
 | `POST` | `/demo/seed` | Demo Seed — Create a fully populated demo circle for the current user (DEMO_MODE only). |
 | `POST` | `/demo/reset` | Demo Reset — Delete every circle owned by the current user (DEMO_MODE only). |
 
+## Twilio webhooks
+
+These are called by Twilio, not the frontend. Requests are checked against `X-Twilio-Signature` using `TWILIO_AUTH_TOKEN` and `PUBLIC_BASE_URL`. Each reply is TwiML.
+
+1. `voice`: Twilio fetches this when the senior answers. The reply plays the opener (the cloned voice via `<Play>`, or Hugh via `<Say>`) and then a speech `<Gather>`.
+2. `gather`: Twilio posts `SpeechResult` here. The engine decides the next line and replies with `<Play>`/`<Say>` + `<Gather>`, or a spoken disclosure + `<Hangup/>`. Empty results re-listen; after `TWILIO_MAX_SILENCES` the call wraps up.
+3. `status`: Twilio's StatusCallback when the call ends (`completed`, `busy`, `no-answer`, `failed`, `canceled`). Scoring, SMS and alerts happen here.
+
 ## Simulator (mock mode only)
 
-`POST /dev/calls/{id}/say {"text": "..."}` makes the senior say something on a simulated call, for either a practice call or a Hugh call id. `POST /dev/calls/{id}/hangup` makes the senior hang up. `GET /dev/sms` lists the SMS messages that would have been sent.
+`POST /dev/calls/{id}/say {"text": "..."}` makes the senior say something on a simulated call (practice or Hugh call id). `POST /dev/calls/{id}/hangup` makes the senior hang up. `GET /dev/sms` lists the SMS messages that would have been sent.

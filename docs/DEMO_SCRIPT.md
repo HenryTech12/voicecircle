@@ -1,6 +1,6 @@
 # VoiceCircle: 3-minute demo script
 
-**Setup:** run the API and web app (see README). Sign in as `alex@example.com`. Keep a file named `deepfake_alex.wav` ready (any audio file works in mock mode). For a live demo, use a real Telnyx number and your own phone as the senior's number.
+**Setup:** run the API and web app (see README). Sign in as `alex@example.com`. Keep a file named `deepfake_alex.wav` ready (any audio file works in mock mode). For a live demo, use your Twilio number and your own (verified) phone as the senior's number.
 
 | Time | Screen | Say / do |
 | --- | --- | --- |

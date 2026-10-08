@@ -1,7 +1,7 @@
 """Unit tests for pure logic: scoring, safety guard, metrics, client_state, scenarios."""
 import pytest
 
-from app.services import llm, metrics, scenarios, telnyx
+from app.services import llm, metrics, scenarios, twilio
 
 
 def T(*pairs):
@@ -84,9 +84,9 @@ def test_flags():
 
 
 def test_client_state_roundtrip():
-    s = telnyx.encode_state({"kind": "practice", "id": "abc"})
-    assert telnyx.decode_state(s) == {"kind": "practice", "id": "abc"}
-    assert telnyx.decode_state("%%%") == {} and telnyx.decode_state(None) == {}
+    s = twilio.encode_state({"kind": "practice", "id": "abc"})
+    assert twilio.decode_state(s) == {"kind": "practice", "id": "abc"}
+    assert twilio.decode_state("%%%") == {} and twilio.decode_state(None) == {}
 
 
 def test_scenarios_render():

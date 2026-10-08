@@ -7,7 +7,7 @@ VoiceCircle has four parts:
 | Pillar | What it does |
 | --- | --- |
 | **Voice Circle** | Family members record a 30–60 s voice sample (with explicit consent). It becomes a voice profile in Resemble AI. |
-| **Scam Training** | Places a real phone call (Telnyx) to the senior in a cloned family voice, running a safe scam script at Easy / Medium / Hard. It scores how they responded and always ends by explaining it was practice. |
+| **Scam Training** | Places a real phone call (Twilio) to the senior in a cloned family voice, running a safe scam script at Easy / Medium / Hard. It scores how they responded and always ends by explaining it was practice. |
 | **Deepfake Check** | Upload a suspicious recording. You get a plain-language verdict: REAL, FAKE, NOT THEM or NOT SURE. It uses AI-voice detection plus a speaker match against the enrolled voice. |
 | **Hugh** | A friendly daily companion call. It tracks speaking pace, answer time, filler words, recall and mood against the senior's own baseline, and alerts family when something changes. |
 
@@ -16,8 +16,8 @@ Built for **ForgeHacks 2026** (AI + Cybersecurity, AI + Healthcare).
 ```
 voicecircle/
 ├── api/                  FastAPI backend (Python 3.11+)
-│   ├── app/              routers, services (telnyx, resemble, llm, metrics…), ORM models
-│   ├── tests/            106 pytest tests covering every endpoint
+│   ├── app/              routers, services (twilio, resemble, llm, metrics…), ORM models
+│   ├── tests/            112 pytest tests covering every endpoint
 │   ├── scripts/          export_openapi.py
 │   ├── requirements*.txt, .env.example, Dockerfile
 ├── web/                  React + TypeScript + Vite + Tailwind frontend
@@ -62,7 +62,7 @@ Then:
 ## Tests
 
 ```bash
-cd api && pytest -q          # 106 backend tests (every endpoint + webhook, scheduler, metrics, scoring, safety)
+cd api && pytest -q          # 112 backend tests (every endpoint + webhook, scheduler, metrics, scoring, safety)
 cd web && npm test           # frontend unit tests (API client, formatting)
 cd web && npm run build      # type-check + production build
 ```
@@ -74,7 +74,7 @@ cd web && npm run build      # type-check + production build
 | `test_practice.py` (20) | dial → cloned opener, every outcome & score, stand-firm wrap-up, safety stop on digits, max turns, disclosure, one call at a time, cancel, scheduling, no-answer, dial failure, simulator errors |
 | `test_detection.py` (9) | REAL / FAKE / NOT THEM / NOT SURE, clones from practice calls detected, provider failure, validation, access |
 | `test_companion_alerts.py` (7) | Hugh call flow, metrics, baseline + change flags, wellbeing alerts + SMS, trends, alert list/filter/ack |
-| `test_system.py` (12) | Telnyx webhook signature (ed25519), idempotency, media tokens, demo seed/reset, scheduler daily call (once per day), AI-assistant events |
+| `test_system.py` (18) | Twilio signature check (incl. Twilio's documented example), full live practice call through TwiML (Play → Gather → disclosure → Hangup → status callback → SMS), safety stop, silence wrap-up on Hugh calls, no-answer, cancel via REST, Messaging Service SMS, TwiML escaping, idempotency, media tokens, demo seed/reset, scheduler |
 | `test_units.py` (22) | scoring classifier, sensitive-number guard, metrics maths, decision thresholds, audio validation, state encoding |
 
 ## Live mode (real calls)
@@ -83,15 +83,15 @@ Set `MOCK_PROVIDERS=false` in `api/.env` and fill in:
 
 | Service | Variables | Notes |
 | --- | --- | --- |
-| **Telnyx** | `TELNYX_API_KEY`, `TELNYX_CONNECTION_ID`, `TELNYX_FROM_NUMBER`, `TELNYX_PUBLIC_KEY`, `TELNYX_MESSAGING_PROFILE_ID` | Create a Call Control application and set its webhook URL to `https://<your-api>/api/v1/webhooks/telnyx`. Buy a number and assign it. Webhooks are verified with your account's public key. |
+| **Twilio** | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, optional `TWILIO_MESSAGING_SERVICE_SID`, `TWILIO_SAY_VOICE`, `TWILIO_SPEECH_LANGUAGE` | Get a Twilio number. You don't need to configure any webhook in the console: each call passes its own `Url`/`StatusCallback` (`/api/v1/webhooks/twilio/voice|gather|status`). Webhooks are verified with `X-Twilio-Signature`, so `PUBLIC_BASE_URL` must be exactly the https URL Twilio calls. Enable the senior's country under Voice > Settings > Geo permissions. On a trial account you can only call and text verified numbers. |
 | **Resemble AI** | `RESEMBLE_API_KEY`, `RESEMBLE_PROJECT_UUID`, `RESEMBLE_FALLBACK_VOICE_UUID` | Creating voices through the API needs a Resemble plan that includes API voice creation (Business tier at the time of writing). Deepfake detection and identity endpoints may also need plan access. Check your dashboard. |
 | **LLM** (optional) | `LLM_PROVIDER` (`openai` or `anthropic`), `LLM_API_KEY`, `LLM_MODEL` | Generates adaptive scam lines, scores calls and drives Hugh. Without a key, scripted lines and the keyword classifier are used. |
-| **Public URL** | `PUBLIC_BASE_URL` | Telnyx and Resemble must reach your API. For local testing use `ngrok http 8000` or `cloudflared tunnel`. |
+| **Public URL** | `PUBLIC_BASE_URL` | Twilio and Resemble must reach your API over https. For local testing use `ngrok http 8000` or `cloudflared tunnel`. |
 | **Scheduler** | `SCHEDULER_ENABLED=true` | Places daily Hugh calls at each senior's local time and starts scheduled practice calls. |
 
 ### Supabase (optional, for production)
 
-1. Run `supabase/migrations/001_init.sql` in the SQL editor. It creates the tables, enables RLS and adds 3 private storage buckets.
+1. Run `supabase/migrations/001_init.sql` in the SQL editor. It creates the tables, enables RLS and adds 3 private storage buckets. If you ran an older Telnyx version of it, also run `002_twilio_rename.sql`.
 2. API: `DATABASE_URL=postgresql+asyncpg://…`, `AUTH_MODE=supabase`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET`. Use `STORAGE_BACKEND=supabase` with `SUPABASE_SERVICE_ROLE_KEY`.
 3. Web: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`. The login page switches to magic-link email automatically.
 
@@ -107,11 +107,11 @@ Set `MOCK_PROVIDERS=false` in `api/.env` and fill in:
       ▲  polling                   │   │──▶  Storage (local / Supabase)
       │                            │   ├──▶  Resemble AI: clone, synthesize, detect, identity
       │                            │   ├──▶  LLM: scam lines, scoring, Hugh replies, summaries
-      │                            ▼   └──▶  Telnyx: dial, play audio, transcribe, SMS
-      └──────── SMS alerts ◀── Telnyx ──webhooks──▶ /api/v1/webhooks/telnyx (signed, idempotent)
+      │                            ▼   └──▶  Twilio REST: dial, hang up, SMS
+      └──────── SMS alerts ◀── Twilio ──webhooks──▶ /api/v1/webhooks/twilio/{voice,gather,status} → TwiML
 ```
 
-- **Call engine** (`app/services/calls.py`): an event-driven state machine for practice and Hugh calls. It handles `call.answered`, playback/speak ended, transcription and hangup. Telnyx webhooks and the mock event bus feed the same handler, so mock mode exercises the real logic.
+- **Call engine** (`app/services/calls.py`): an event-driven state machine for practice and Hugh calls. It handles `call.answered`, playback/speak ended, transcription and hangup. Twilio webhooks and the mock event bus feed the same handler, so mock mode exercises the real logic. In live mode each webhook runs the engine inside a TwiML context: actions become `<Play>`, `<Say>`, `<Gather input="speech">` and `<Hangup/>` verbs in the reply (`app/services/twilio.py`).
 - **Mock providers**: every external call has a realistic simulated version, so the whole app runs and the tests pass offline.
 - **Errors** always come back as `{"error": {"code", "message", "details?"}}`.
 

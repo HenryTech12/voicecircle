@@ -1,52 +1,230 @@
-import base64
-import json
-import time
 from datetime import datetime, timezone
 
-from nacl.signing import SigningKey
+import pytest
 
 from app.config import settings
 from app.db import CircleMember, CompanionCall, PracticeCall, SessionLocal
 from app.jobs import scheduler_tick
-from app.services import storage, telnyx
+from app.services import calls, storage, twilio
 
 from .conftest import API, make_circle
 
+TOKEN = "test-auth-token"
 
-# ------------------------------------------------------------------ webhooks
+
+# ------------------------------------------------------------------ Twilio webhooks
 
 
-def _signed(body: bytes, key: SigningKey, ts: int | None = None):
-    ts = str(ts or int(time.time()))
-    sig = key.sign(f"{ts}|".encode() + body).signature
-    return {"telnyx-signature-ed25519": base64.b64encode(sig).decode(), "telnyx-timestamp": ts, "content-type": "application/json"}
+def _signed_post(client, url: str, params: dict, token: str = TOKEN):
+    sig = twilio.compute_signature(url, params, token)
+    return client.post(url, data=params, headers={"X-Twilio-Signature": sig})
+
+
+@pytest.fixture
+def live(monkeypatch):
+    """Live (non-mock) Twilio mode with the REST API faked out."""
+    sent: list[tuple[str, object]] = []
+    sids = iter(f"CAlive{i:026d}" for i in range(1, 100))
+
+    async def fake_post(path, data):
+        sent.append((path, data))
+        if path == "/Calls.json":
+            return {"sid": next(sids)}
+        return {"sid": "SMfake"}
+
+    async def fake_tts(text, voice_uuid):
+        return f"http://test/api/v1/media/fake-{abs(hash(text)) % 10000}.wav"
+
+    class Live:
+        def __init__(self):
+            self.sent = sent
+
+        def on(self):
+            """Switch to live mode (call after setting up the circle in mock mode)."""
+            monkeypatch.setattr(settings, "MOCK_PROVIDERS", False)
+            monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", TOKEN)
+            monkeypatch.setattr(settings, "TWILIO_ACCOUNT_SID", "ACtest")
+            monkeypatch.setattr(settings, "TWILIO_FROM_NUMBER", "+15005550006")
+            monkeypatch.setattr(twilio, "_post", fake_post)
+            monkeypatch.setattr(calls, "_tts_url", fake_tts)
+            return self
+
+    return Live()
+
+
+def test_signature_algorithm_matches_twilio_docs_example():
+    # Worked example from https://www.twilio.com/docs/usage/security
+    url = "https://example.com/myapp.php?foo=1&bar=2"
+    params = {"Digits": "1234", "To": "+18005551212", "From": "+14158675310", "Caller": "+14158675310", "CallSid": "CA1234567890ABCDE"}
+    assert twilio.compute_signature(url, params, "12345") == "L/OH5YylLD5NRKLltdqwSvS0BnU="
 
 
 async def test_webhook_signature_required_in_live_mode(client, monkeypatch):
-    key = SigningKey.generate()
     monkeypatch.setattr(settings, "MOCK_PROVIDERS", False)
-    monkeypatch.setattr(settings, "TELNYX_PUBLIC_KEY", base64.b64encode(bytes(key.verify_key)).decode())
-    body = json.dumps({"data": {"id": "evt-1", "event_type": "call.initiated", "payload": {}}}).encode()
-    r = await client.post(f"{API}/webhooks/telnyx", content=body, headers={"content-type": "application/json"})
-    assert r.status_code == 401 and r.json()["error"]["code"] == "invalid_signature"
-    wrong = SigningKey.generate()
-    r = await client.post(f"{API}/webhooks/telnyx", content=body, headers=_signed(body, wrong))
-    assert r.status_code == 401
-    r = await client.post(f"{API}/webhooks/telnyx", content=body, headers=_signed(body, key, ts=int(time.time()) - 3600))
-    assert r.status_code == 401  # replay protection
-    r = await client.post(f"{API}/webhooks/telnyx", content=body, headers=_signed(body, key))
-    assert r.status_code == 200 and r.json() == {"received": True}
+    monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", TOKEN)
+    url = twilio.webhook_url("voice", twilio.encode_state({"kind": "practice", "id": "nope"}))
+    params = {"CallSid": "CAx", "CallStatus": "in-progress"}
+    r = await client.post(url, data=params)
+    assert r.status_code == 403 and r.json()["error"]["code"] == "invalid_signature"
+    r = await _signed_post(client, url, params, token="wrong-token")
+    assert r.status_code == 403
+    r = await client.post(url, data={**params, "CallStatus": "tampered"}, headers={"X-Twilio-Signature": twilio.compute_signature(url, params, TOKEN)})
+    assert r.status_code == 403  # body changed after signing
+    r = await _signed_post(client, url, params)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/xml")
+    assert "<Hangup/>" in r.text  # unknown call: just hang up
 
 
-async def test_webhook_bad_payloads(client):
-    r = await client.post(f"{API}/webhooks/telnyx", content=b"not json", headers={"content-type": "application/json"})
+async def test_webhook_missing_callsid(client):
+    r = await client.post(f"{API}/webhooks/twilio/voice", data={})
     assert r.status_code == 400
-    r = await client.post(f"{API}/webhooks/telnyx", json={"hello": 1})
-    assert r.status_code == 400
 
 
-async def test_webhook_drives_call_and_is_idempotent(client, auth):
-    """Simulate real Telnyx webhooks hitting the endpoint for a practice call."""
+async def test_live_practice_call_end_to_end(client, auth, live):
+    data = await make_circle(client, auth)
+    live.on()
+    r = await client.post(
+        f"{API}/circles/{data['circle']['id']}/practice-calls",
+        json={"senior_member_id": data["senior"]["id"], "voice_member_id": data["contact"]["id"], "scenario": "grandchild_in_trouble", "difficulty": "easy"},
+        headers=auth,
+    )
+    call_id = r.json()["id"]
+    # 1. we asked Twilio to dial with our webhook URLs
+    path, form = live.sent[0]
+    form = dict(form)
+    assert path == "/Calls.json" and form["To"] == "+2348010000001" and form["From"] == "+15005550006"
+    assert form["Url"].startswith("http://test/api/v1/webhooks/twilio/voice?state=")
+    assert form["StatusCallback"].startswith("http://test/api/v1/webhooks/twilio/status?state=")
+    c = (await client.get(f"{API}/practice-calls/{call_id}", headers=auth)).json()
+    assert c["status"] == "dialing"
+    sid = "CAlive" + "1".zfill(26)
+    voice_url, status_url = form["Url"], form["StatusCallback"]
+
+    # 2. senior answers -> cloned opener plays, then we listen
+    r = await _signed_post(client, voice_url, {"CallSid": sid, "CallStatus": "in-progress"})
+    assert r.status_code == 200
+    assert "<Play>http://test/api/v1/media/fake-" in r.text
+    assert '<Gather input="speech"' in r.text and "webhooks/twilio/gather?state=" in r.text
+    assert r.text.index("<Play>") < r.text.index("<Gather")
+    gather_url = r.text.split('action="')[1].split('"')[0].replace("&amp;", "&")
+    c = (await client.get(f"{API}/practice-calls/{call_id}", headers=auth)).json()
+    assert c["status"] == "in_progress" and c["transcript"][0]["speaker"] == "caller"
+
+    # 3. silence -> just listen again
+    r = await _signed_post(client, gather_url, {"CallSid": sid, "SpeechResult": ""})
+    assert "<Gather" in r.text and "silence=1" in r.text and "<Play>" not in r.text
+
+    # 4. senior asks who it is -> caller presses on in the cloned voice
+    r = await _signed_post(client, gather_url, {"CallSid": sid, "SpeechResult": "Who is this really?", "Confidence": "0.91"})
+    assert "<Play>" in r.text and "<Gather" in r.text and "<Hangup/>" not in r.text
+
+    # 5. senior stands firm -> neutral-voice disclosure, then hang up
+    r = await _signed_post(client, gather_url, {"CallSid": sid, "SpeechResult": "Let me call you back on your own number."})
+    assert "<Say" in r.text and "practice call" in r.text and r.text.rstrip().endswith("<Hangup/></Response>")
+    assert "<Gather" not in r.text and "<Play>" not in r.text
+
+    # 6. status callback (twice: Twilio may retry) finalises the call once
+    for _ in range(2):
+        r = await _signed_post(client, status_url, {"CallSid": sid, "CallStatus": "completed", "CallDuration": "42"})
+        assert r.status_code == 200
+    c = (await client.get(f"{API}/practice-calls/{call_id}", headers=auth)).json()
+    assert c["status"] == "completed" and c["outcome"] == "verified" and c["score"] == 90
+    sms = [d for p, d in live.sent if p == "/Messages.json"]
+    assert len(sms) == 1 and sms[0]["To"] == "+2348010000001" and "practice call" in sms[0]["Body"]
+    assert sms[0]["From"] == "+15005550006"
+
+
+async def test_live_safety_stop_and_no_digits_stored(client, auth, live):
+    data = await make_circle(client, auth)
+    live.on()
+    r = await client.post(
+        f"{API}/circles/{data['circle']['id']}/practice-calls",
+        json={"senior_member_id": data["senior"]["id"], "voice_member_id": data["contact"]["id"], "scenario": "stuck_abroad", "difficulty": "hard"},
+        headers=auth,
+    )
+    call_id = r.json()["id"]
+    form = dict(live.sent[0][1])
+    sid = "CAlive" + "1".zfill(26)
+    r = await _signed_post(client, form["Url"], {"CallSid": sid})
+    gather_url = r.text.split('action="')[1].split('"')[0].replace("&amp;", "&")
+    r = await _signed_post(client, gather_url, {"CallSid": sid, "SpeechResult": "my card number is 4111 1111 1111 1111"})
+    assert "<Say" in r.text and "<Hangup/>" in r.text
+    c = (await client.get(f"{API}/practice-calls/{call_id}", headers=auth)).json()
+    assert c["safety_stop"] is True and "4111" not in str(c["transcript"])
+
+
+async def test_live_repeated_silence_wraps_up(client, auth, live, monkeypatch):
+    monkeypatch.setattr(settings, "TWILIO_MAX_SILENCES", 2)
+    data = await make_circle(client, auth, enroll=False)
+    live.on()
+    r = await client.post(f"{API}/members/{data['senior']['id']}/companion-calls", headers=auth)
+    cid = r.json()["id"]
+    form = dict(live.sent[0][1])
+    sid = "CAlive" + "1".zfill(26)
+    r = await _signed_post(client, form["Url"], {"CallSid": sid})
+    assert "<Say" in r.text and "Hugh" in r.text and "<Gather" in r.text  # Hugh greets with Twilio <Say>
+    gather_url = r.text.split('action="')[1].split('"')[0].replace("&amp;", "&")
+    r = await _signed_post(client, gather_url, {"CallSid": sid, "SpeechResult": ""})
+    gather_url = r.text.split('action="')[1].split('"')[0].replace("&amp;", "&")
+    assert "silence=1" in gather_url
+    r = await _signed_post(client, gather_url, {"CallSid": sid, "SpeechResult": ""})
+    assert "call again tomorrow" in r.text and "<Hangup/>" in r.text
+    r = await _signed_post(client, form["StatusCallback"], {"CallSid": sid, "CallStatus": "completed"})
+    c = (await client.get(f"{API}/companion-calls/{cid}", headers=auth)).json()
+    assert c["status"] == "completed"
+
+
+async def test_live_no_answer_status(client, auth, live):
+    data = await make_circle(client, auth)
+    live.on()
+    r = await client.post(
+        f"{API}/circles/{data['circle']['id']}/practice-calls",
+        json={"senior_member_id": data["senior"]["id"], "voice_member_id": data["contact"]["id"], "scenario": "grandchild_in_trouble", "difficulty": "easy"},
+        headers=auth,
+    )
+    call_id = r.json()["id"]
+    form = dict(live.sent[0][1])
+    r = await _signed_post(client, form["StatusCallback"], {"CallSid": "CAlive" + "1".zfill(26), "CallStatus": "no-answer"})
+    assert r.status_code == 200
+    c = (await client.get(f"{API}/practice-calls/{call_id}", headers=auth)).json()
+    assert c["status"] == "no_answer"
+    # non-final statuses are ignored
+    r = await _signed_post(client, form["StatusCallback"], {"CallSid": "CAother", "CallStatus": "ringing"})
+    assert r.status_code == 200
+
+
+async def test_live_cancel_hangs_up_via_rest(client, auth, live):
+    data = await make_circle(client, auth)
+    live.on()
+    r = await client.post(
+        f"{API}/circles/{data['circle']['id']}/practice-calls",
+        json={"senior_member_id": data["senior"]["id"], "voice_member_id": data["contact"]["id"], "scenario": "grandchild_in_trouble", "difficulty": "easy"},
+        headers=auth,
+    )
+    r = await client.post(f"{API}/practice-calls/{r.json()['id']}/cancel", headers=auth)
+    assert r.json()["status"] == "cancelled"
+    sid = "CAlive" + "1".zfill(26)
+    assert (f"/Calls/{sid}.json", {"Status": "completed"}) in live.sent
+
+
+async def test_live_sms_uses_messaging_service_when_set(live, monkeypatch):
+    live.on()
+    monkeypatch.setattr(settings, "TWILIO_MESSAGING_SERVICE_SID", "MGabc")
+    assert await twilio.send_sms("+2348000000000", "hi") is True
+    assert live.sent[-1] == ("/Messages.json", {"To": "+2348000000000", "Body": "hi", "MessagingServiceSid": "MGabc"})
+    assert await twilio.send_sms(None, "hi") is False
+
+
+def test_twiml_rendering_escapes_text():
+    xml = twilio.render_twiml([("say", "Tom & Jerry <3"), ("gather",)], "http://x/g?state=a&silence=0")
+    assert "Tom &amp; Jerry &lt;3" in xml and 'action="http://x/g?state=a&amp;silence=0"' in xml
+    assert twilio.render_twiml([("play", "http://a/b.wav")], "http://x/g").count("<Gather") == 1  # listen by default
+    assert twilio.render_twiml([("hangup",), ("say", "never")], "").endswith("<Hangup/></Response>")
+
+
+async def test_mock_webhook_events_still_drive_call(client, auth):
+    """Mock mode: engine events from the simulator are idempotent."""
+    from app.services import events
     data = await make_circle(client, auth)
     r = await client.post(
         f"{API}/circles/{data['circle']['id']}/practice-calls",
@@ -54,45 +232,19 @@ async def test_webhook_drives_call_and_is_idempotent(client, auth):
         headers=auth,
     )
     call_id = r.json()["id"]
-    ccid = next(iter(telnyx.MOCK_CALLS))
-    state = telnyx.encode_state({"kind": "practice", "id": call_id})
-    evt = {"data": {"id": "evt-say-1", "event_type": "call.transcription", "payload": {
-        "call_control_id": ccid, "client_state": state,
-        "transcription_data": {"transcript": "Who is this?", "is_final": True}}}}
-    assert (await client.post(f"{API}/webhooks/telnyx", json=evt)).status_code == 200
-    assert (await client.post(f"{API}/webhooks/telnyx", json=evt)).status_code == 200  # duplicate delivery
+    sid = next(iter(twilio.MOCK_CALLS))
+    evt = events.make_event("call.transcription", {"call_control_id": sid, "transcription_data": {"transcript": "Who is this?", "is_final": True}})
+    await calls.handle_event(evt)
+    await calls.handle_event(evt)  # duplicate delivery
     c = (await client.get(f"{API}/practice-calls/{call_id}", headers=auth)).json()
     assert [t["text"] for t in c["transcript"]].count("Who is this?") == 1
-    # interim transcripts are ignored
-    interim = {"data": {"id": "evt-say-2", "event_type": "call.transcription", "payload": {
-        "call_control_id": ccid, "transcription_data": {"transcript": "Who", "is_final": False}}}}
-    await client.post(f"{API}/webhooks/telnyx", json=interim)
-    # hangup routed by call_control_id only (no client_state)
-    hang = {"data": {"id": "evt-hang", "event_type": "call.hangup", "payload": {"call_control_id": ccid}}}
-    await client.post(f"{API}/webhooks/telnyx", json=hang)
+    interim = events.make_event("call.transcription", {"call_control_id": sid, "transcription_data": {"transcript": "Who", "is_final": False}})
+    await calls.handle_event(interim)
+    await calls.handle_event(events.make_event("call.hangup", {"call_control_id": sid}))
     c = (await client.get(f"{API}/practice-calls/{call_id}", headers=auth)).json()
     assert c["status"] == "completed" and c["outcome"] == "hung_up_early"
     assert "Who" not in [t["text"] for t in c["transcript"]]
-
-
-async def test_webhook_unknown_call_is_ignored(client):
-    evt = {"data": {"id": "evt-x", "event_type": "call.answered", "payload": {"call_control_id": "unknown"}}}
-    assert (await client.post(f"{API}/webhooks/telnyx", json=evt)).status_code == 200
-
-
-async def test_ai_assistant_history_event(client, auth):
-    data = await make_circle(client, auth, enroll=False)
-    r = await client.post(f"{API}/members/{data['senior']['id']}/companion-calls", headers=auth)
-    cid = r.json()["id"]
-    ccid = next(iter(telnyx.MOCK_CALLS))
-    evt = {"data": {"id": "evt-hist", "event_type": "call.ai_gather.message_history_updated", "payload": {
-        "call_control_id": ccid, "message_history": [
-            {"role": "assistant", "content": "Hello Ada, it's Hugh."},
-            {"role": "user", "content": "Hello Hugh, I'm well and I baked a cake."},
-            {"role": "system", "content": "ignored"}]}}}
-    await client.post(f"{API}/webhooks/telnyx", json=evt)
-    c = (await client.get(f"{API}/companion-calls/{cid}", headers=auth)).json()
-    assert [t["speaker"] for t in c["transcript"]] == ["hugh", "senior"]
+    await calls.handle_event(events.make_event("call.answered", {"call_control_id": "unknown"}))  # ignored
 
 
 # ------------------------------------------------------------------ media
@@ -206,7 +358,7 @@ async def test_openapi_lists_every_endpoint(client):
         "/api/v1/practice-calls/{call_id}/cancel", "/api/v1/circles/{circle_id}/detections",
         "/api/v1/detections/{detection_id}", "/api/v1/members/{member_id}/companion-calls",
         "/api/v1/companion-calls/{call_id}", "/api/v1/members/{member_id}/companion-trends",
-        "/api/v1/circles/{circle_id}/alerts", "/api/v1/alerts/{alert_id}/ack", "/api/v1/webhooks/telnyx",
+        "/api/v1/circles/{circle_id}/alerts", "/api/v1/alerts/{alert_id}/ack", "/api/v1/webhooks/twilio/voice", "/api/v1/webhooks/twilio/gather", "/api/v1/webhooks/twilio/status",
         "/api/v1/dev/calls/{call_id}/say", "/api/v1/dev/calls/{call_id}/hangup", "/api/v1/dev/sms",
         "/api/v1/demo/seed", "/api/v1/demo/reset",
     ]

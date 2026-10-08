@@ -23,7 +23,7 @@ import pytest  # noqa: E402
 
 from app.db import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
-from app.services import audio, telnyx  # noqa: E402
+from app.services import audio, twilio  # noqa: E402
 
 API = "/api/v1"
 
@@ -33,8 +33,8 @@ async def fresh_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-    telnyx.MOCK_CALLS.clear()
-    telnyx.SENT_SMS.clear()
+    twilio.MOCK_CALLS.clear()
+    twilio.SENT_SMS.clear()
     shutil.rmtree(f"{_TMP}/storage", ignore_errors=True)
     yield
 

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.db import CompanionCall, SessionLocal
-from app.services import telnyx
+from app.services import twilio
 
 from .conftest import API, make_circle
 
@@ -93,7 +93,7 @@ async def test_change_from_baseline_raises_wellbeing_alert(client, auth):
     await _seed_history(cid, sid)
     # slow, hesitant answers: very long gaps relative to words
     c = await call_hugh(client, auth, sid)
-    ccid = next(iter(telnyx.MOCK_CALLS))
+    ccid = next(iter(twilio.MOCK_CALLS))
     from app.services import calls
 
     async with SessionLocal() as s:  # pretend the call started 2 minutes ago -> long response gaps

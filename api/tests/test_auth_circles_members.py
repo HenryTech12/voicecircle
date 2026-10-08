@@ -235,3 +235,14 @@ async def test_member_access_is_scoped(client, auth):
     other = await login(client, "x@example.com")
     r = await client.get(f"{API}/members/{data['senior']['id']}", headers=other)
     assert r.status_code == 403
+
+
+async def test_token_for_existing_email_with_new_id_reuses_user(client):
+    """Switching auth providers (new user id, same email) must not 500 on the unique email."""
+    from app.deps import create_local_token
+
+    first = (await client.post("/api/v1/auth/dev-login", json={"email": "dup@example.com"})).json()
+    token = create_local_token("some-other-id", "dup@example.com")
+    r = await client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    assert r.json()["id"] == first["user"]["id"]

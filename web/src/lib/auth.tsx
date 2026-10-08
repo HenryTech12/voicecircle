@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { api, setTokenProvider, tokenStore, type AuthConfig, type Me } from "./api";
+import { api, getToken, setTokenProvider, tokenStore, type AuthConfig, type Me } from "./api";
 
 const SB_URL = __SUPABASE_URL__ || undefined;
 const SB_KEY = __SUPABASE_ANON_KEY__ || undefined;
@@ -16,6 +16,8 @@ interface AuthState {
   logout: () => Promise<void>;
   refreshMe: () => Promise<Me | null>;
 }
+
+const hasToken = async () => !!(await getToken());
 
 const Ctx = createContext<AuthState | null>(null);
 
@@ -37,24 +39,41 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
     (async () => {
       try {
         const cfg = await api.authConfig();
+        if (cancelled) return;
         setConfig(cfg);
         if (cfg.auth_mode === "supabase" && supabase) {
           setTokenProvider(async () => (await supabase.auth.getSession()).data.session?.access_token ?? null);
-          supabase.auth.onAuthStateChange(() => void refreshMe());
+          const { data } = supabase.auth.onAuthStateChange((event) => {
+            // INITIAL_SESSION is handled by the explicit refresh below; avoid duplicate /me calls.
+            if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") void refreshMe();
+            if (event === "SIGNED_OUT") setMe(null);
+          });
+          unsubscribe = () => data.subscription.unsubscribe();
         }
-        if (cfg.auth_mode === "supabase" || tokenStore.get()) await refreshMe();
+        // Only call /me when we actually hold a token; otherwise it is a guaranteed 401.
+        if (await hasToken()) await refreshMe();
       } catch (e) {
-        setError((e as Error).message);
+        if (!cancelled) setError((e as Error).message);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
-    const onUnauthorized = () => setMe(null);
+    const onUnauthorized = () => {
+      // A 401 means the stored token is stale or invalid: drop it so we stop retrying with it.
+      if (!supabase) tokenStore.clear();
+      setMe(null);
+    };
     window.addEventListener("vc:unauthorized", onUnauthorized);
-    return () => window.removeEventListener("vc:unauthorized", onUnauthorized);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+      window.removeEventListener("vc:unauthorized", onUnauthorized);
+    };
   }, [refreshMe]);
 
   const loginLocal = useCallback(

@@ -1,15 +1,19 @@
 """Auth and access-control dependencies."""
+import logging
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 
 import jwt
 from fastapi import Depends, Header
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
 from .db import Circle, CircleMember, User, get_session
 from .errors import APIError, forbidden, not_found
+
+log = logging.getLogger("voicecircle.auth")
 
 LOCAL_ISSUER = "voicecircle-local"
 
@@ -35,10 +39,15 @@ def _jwks_client() -> jwt.PyJWKClient:
 def decode_token(token: str) -> dict:
     try:
         if settings.AUTH_MODE == "supabase":
-            if settings.SUPABASE_JWT_SECRET:
+            alg = jwt.get_unverified_header(token).get("alg", "")
+            if alg == "HS256":
+                if not settings.SUPABASE_JWT_SECRET:
+                    log.warning("Supabase token is HS256 but SUPABASE_JWT_SECRET is not set")
+                    raise APIError(401, "invalid_token", "Invalid authentication token")
                 return jwt.decode(
                     token, settings.SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated"
                 )
+            # Newer Supabase projects sign with asymmetric keys (ES256/RS256) published via JWKS.
             key = _jwks_client().get_signing_key_from_jwt(token).key
             return jwt.decode(token, key, algorithms=["RS256", "ES256"], audience="authenticated")
         return jwt.decode(
@@ -50,7 +59,9 @@ def decode_token(token: str) -> dict:
         )
     except jwt.ExpiredSignatureError:
         raise APIError(401, "token_expired", "Your session has expired. Please sign in again.")
-    except jwt.PyJWTError:
+    except jwt.PyJWTError as e:
+        # Log the real reason (wrong secret, wrong audience, wrong auth mode...) so it shows in Render logs.
+        log.warning("Token rejected (AUTH_MODE=%s): %s: %s", settings.AUTH_MODE, type(e).__name__, e)
         raise APIError(401, "invalid_token", "Invalid authentication token")
 
 
@@ -67,9 +78,21 @@ async def get_current_user(
         raise APIError(401, "invalid_token", "Token has no subject")
     user = await session.get(User, user_id)
     if user is None:
+        # The same email may already exist under another id (e.g. AUTH_MODE switched, or two first
+        # requests racing). Reuse that row instead of crashing on the unique email constraint.
+        user = (await session.execute(select(User).where(User.email == email))).scalar()
+    if user is None:
         user = User(id=user_id, email=email)
         session.add(user)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            user = await session.get(User, user_id) or (
+                await session.execute(select(User).where(User.email == email))
+            ).scalar()
+            if user is None:
+                raise
     return user
 
 

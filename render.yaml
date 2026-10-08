@@ -20,7 +20,7 @@ services:
         generateValue: true
       - key: STORAGE_BACKEND
         value: local
-      - key: FRONTEND_ORIGIN       # your Vercel URL(s), comma-separated
+      - key: FRONTEND_ORIGIN       # e.g. https://your-app.vercel.app,https://your-app-*.vercel.app (wildcards OK)
         sync: false
       - key: PUBLIC_BASE_URL       # this service's own URL, e.g. https://voicecircle-api.onrender.com
         sync: false

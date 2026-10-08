@@ -1,7 +1,7 @@
 // Typed client for the VoiceCircle FastAPI backend (/api/v1).
 // Types mirror app/schemas.py. Run `npm run gen:types` to generate OpenAPI types if you change the API.
 
-export const API_BASE = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+export const API_BASE = (__API_BASE_URL__ || "http://localhost:8000").replace(/\/$/, "");
 const PREFIX = `${API_BASE}/api/v1`;
 const TOKEN_KEY = "vc_token";
 

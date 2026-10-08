@@ -2,8 +2,8 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, setTokenProvider, tokenStore, type AuthConfig, type Me } from "./api";
 
-const SB_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const SB_URL = __SUPABASE_URL__ || undefined;
+const SB_KEY = __SUPABASE_ANON_KEY__ || undefined;
 const supabase: SupabaseClient | null = SB_URL && SB_KEY ? createClient(SB_URL, SB_KEY) : null;
 
 interface AuthState {
@@ -67,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const sendMagicLink = useCallback(async (email: string) => {
-    if (!supabase) throw new Error("Supabase is not configured in this frontend (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).");
+    if (!supabase) throw new Error("Supabase is not configured in this frontend (SUPABASE_URL / SUPABASE_ANON_KEY).");
     const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
     if (error) throw error;
   }, []);

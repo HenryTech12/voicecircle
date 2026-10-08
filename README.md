@@ -17,7 +17,7 @@ Built for **ForgeHacks 2026** (AI + Cybersecurity, AI + Healthcare).
 voicecircle/
 ├── api/                  FastAPI backend (Python 3.11+)
 │   ├── app/              routers, services (twilio, resemble, llm, metrics…), ORM models
-│   ├── tests/            112 pytest tests covering every endpoint
+│   ├── tests/            123 pytest tests covering every endpoint
 │   ├── scripts/          export_openapi.py
 │   ├── requirements*.txt, .env.example, Dockerfile
 ├── web/                  React + TypeScript + Vite + Tailwind frontend
@@ -62,7 +62,7 @@ Then:
 ## Tests
 
 ```bash
-cd api && pytest -q          # 112 backend tests (every endpoint + webhook, scheduler, metrics, scoring, safety)
+cd api && pytest -q          # 123 backend tests (every endpoint + webhook, scheduler, metrics, scoring, safety)
 cd web && npm test           # frontend unit tests (API client, formatting)
 cd web && npm run build      # type-check + production build
 ```
@@ -98,7 +98,7 @@ Set `MOCK_PROVIDERS=false` in `api/.env` and fill in:
 ### Deploy
 
 - API: `api/Dockerfile` (includes ffmpeg) or `render.yaml` (Render blueprint).
-- Web: `npm run build`, then host `web/dist` on Vercel, Netlify or Cloudflare Pages with `API_BASE_URL=https://<your-api>`. Set `FRONTEND_ORIGIN` on the API to the site URL for CORS.
+- Web: `npm run build`, then host `web/dist` on Vercel, Netlify or Cloudflare Pages with `API_BASE_URL=https://<your-api>`. Set `FRONTEND_ORIGIN` on the API to the site URL for CORS (comma-separated; trailing slashes are ignored; `https://your-app-*.vercel.app` covers preview deploys). Rejected origins are logged.
 
 ## Architecture
 

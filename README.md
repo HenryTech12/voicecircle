@@ -93,12 +93,12 @@ Set `MOCK_PROVIDERS=false` in `api/.env` and fill in:
 
 1. Run `supabase/migrations/001_init.sql` in the SQL editor. It creates the tables, enables RLS and adds 3 private storage buckets. If you ran an older Telnyx version of it, also run `002_twilio_rename.sql`.
 2. API: `DATABASE_URL=postgresql+asyncpg://…`, `AUTH_MODE=supabase`, `SUPABASE_URL`, `SUPABASE_JWT_SECRET`. Use `STORAGE_BACKEND=supabase` with `SUPABASE_SERVICE_ROLE_KEY`.
-3. Web: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`. The login page switches to magic-link email automatically.
+3. Web: `SUPABASE_URL`, `SUPABASE_ANON_KEY`. The login page switches to magic-link email automatically.
 
 ### Deploy
 
 - API: `api/Dockerfile` (includes ffmpeg) or `render.yaml` (Render blueprint).
-- Web: `npm run build`, then host `web/dist` on Vercel, Netlify or Cloudflare Pages with `VITE_API_BASE_URL=https://<your-api>`. Set `FRONTEND_ORIGIN` on the API to the site URL for CORS.
+- Web: `npm run build`, then host `web/dist` on Vercel, Netlify or Cloudflare Pages with `API_BASE_URL=https://<your-api>`. Set `FRONTEND_ORIGIN` on the API to the site URL for CORS.
 
 ## Architecture
 

@@ -86,7 +86,7 @@ async def delete(path: str | None) -> None:
 
 
 async def signed_url(path: str, ttl: int | None = None) -> str:
-    """A URL that third parties (Telnyx, Resemble) or the browser can fetch."""
+    """A URL that third parties (Twilio, Resemble) or the browser can fetch."""
     ttl = ttl or settings.MEDIA_URL_TTL_SECONDS
     if settings.STORAGE_BACKEND == "supabase":
         bucket, key = path.split("/", 1)

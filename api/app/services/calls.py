@@ -1,4 +1,4 @@
-"""Call engines: practice scam calls and Hugh companion calls, driven by Telnyx events.
+"""Call engines: practice scam calls and Hugh companion calls, driven by call events (Twilio webhooks, or the mock provider).
 
 State machine (practice): queued -> dialing -> in_progress -> completed | no_answer | failed | cancelled
 """
@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..db import CircleMember, CompanionCall, PracticeCall, ProcessedEvent, SessionLocal, utcnow
-from . import events, llm, metrics, notify, resemble, scenarios, storage, telnyx
+from . import events, llm, metrics, notify, resemble, scenarios, storage, twilio
 
 log = logging.getLogger("voicecircle.calls")
 _locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -32,16 +32,16 @@ async def _tts_url(text: str, voice_uuid: str | None) -> str | None:
         path = await storage.save("call-audio", wav, "wav")
         return await storage.signed_url(path)
     except Exception as e:
-        log.warning("TTS failed, falling back to Telnyx speak: %s", e)
+        log.warning("TTS failed, falling back to Twilio <Say>: %s", e)
         return None
 
 
 async def _say(ccid: str, text: str, voice_uuid: str | None) -> None:
     url = await _tts_url(text, voice_uuid) if voice_uuid else None
     if url:
-        await telnyx.playback_start(ccid, url)
+        await twilio.playback_start(ccid, url)
     else:
-        await telnyx.speak(ccid, text)
+        await twilio.speak(ccid, text)
 
 
 # ====================================================================== practice
@@ -63,14 +63,14 @@ async def start_practice_call(call_id: str) -> None:
         call.engine_state = {"phase": "dialing", "opener": opener, "opener_url": opener_url, "transcribing": False}
         await s.commit()
         try:
-            ccid = await telnyx.dial(senior.phone_e164, {"kind": "practice", "id": call.id})
+            ccid = await twilio.dial(senior.phone_e164, {"kind": "practice", "id": call.id})
         except Exception as e:
             log.exception("dial failed")
             call.status = "failed"
             call.feedback = {"error": f"Could not place the call: {e}"}
             await s.commit()
             return
-        call.telnyx_call_control_id = ccid
+        call.provider_call_id = ccid
         await notify.audit(s, "voice_clone.used", call.circle_id, call.created_by, practice_call_id=call.id, voice_member_id=contact.id)
         await s.commit()
     await events.flush()
@@ -85,7 +85,7 @@ async def _practice_closing(s, call: PracticeCall, ccid: str, reason: str) -> No
     call.engine_state = st
     call.transcript = [*call.transcript, {"speaker": "system", "text": text, "t_ms": _ms_since(call.started_at)}]
     await s.commit()
-    await telnyx.speak(ccid, text)  # neutral voice, never the clone
+    await twilio.speak(ccid, text)  # neutral voice, never the clone
 
 
 async def handle_practice(etype: str, payload: dict, call_id: str) -> None:
@@ -103,26 +103,26 @@ async def handle_practice(etype: str, payload: dict, call_id: str) -> None:
             if etype == "call.answered":
                 call.status = "in_progress"
                 call.started_at = utcnow()
-                call.telnyx_call_control_id = ccid or call.telnyx_call_control_id
+                call.provider_call_id = ccid or call.provider_call_id
                 st["phase"] = "talking"
                 call.engine_state = st
                 call.transcript = [{"speaker": "caller", "text": st.get("opener", ""), "t_ms": 0}]
                 await s.commit()
                 if st.get("opener_url"):
-                    await telnyx.playback_start(ccid, st["opener_url"])
+                    await twilio.playback_start(ccid, st["opener_url"])
                 else:
-                    await telnyx.speak(ccid, st.get("opener", "Hello?"))
+                    await twilio.speak(ccid, st.get("opener", "Hello?"))
 
             elif etype in ("call.playback.ended", "call.speak.ended"):
                 if st.get("phase") == "closing":
-                    await telnyx.hangup(ccid)
+                    await twilio.hangup(ccid)
                 elif not st.get("transcribing"):
                     st["transcribing"] = True
                     call.engine_state = st
                     await s.commit()
-                    await telnyx.transcription_start(ccid)
+                    await twilio.transcription_start(ccid)
                 else:
-                    await telnyx.listen_again(ccid)
+                    await twilio.listen_again(ccid)
 
             elif etype == "call.transcription":
                 td = payload.get("transcription_data") or {}
@@ -155,6 +155,10 @@ async def handle_practice(etype: str, payload: dict, call_id: str) -> None:
                 await s.commit()
                 await _say(ccid, nxt["line"], voice_uuid)
 
+            elif etype == "call.silence":
+                if st.get("phase") != "closing" and call.status == "in_progress":
+                    await _practice_closing(s, call, ccid, "silence")
+
             elif etype == "call.hangup":
                 await _finish_practice(s, call, st, payload)
 
@@ -179,7 +183,7 @@ async def _finish_practice(s, call: PracticeCall, st: dict, payload: dict) -> No
         f"VoiceCircle: That call was a practice call arranged by your family, not really {contact.display_name}. "
         f"{result['did_well'][0]} Tip: {result['practice_next'][0]}"
     )
-    await telnyx.send_sms(senior.phone_e164 if senior else None, debrief)
+    await twilio.send_sms(senior.phone_e164 if senior else None, debrief)
     if call.outcome in ("hesitated", "complied"):
         sev = "urgent" if call.outcome == "complied" else "warning"
         await notify.create_alert(
@@ -211,18 +215,17 @@ async def start_companion_call(call_id: str) -> None:
         )
         previous = [x for x in res.scalars() if x]
         call.recall_question = llm.recall_question_for(previous[0] if previous else None)
-        mode = "assistant" if (not settings.MOCK_PROVIDERS and settings.TELNYX_HUGH_ASSISTANT_ID) else "loop"
-        call.engine_state = {"phase": "dialing", "mode": mode, "previous": previous, "transcribing": False}
+        call.engine_state = {"phase": "dialing", "previous": previous, "transcribing": False}
         call.status = "dialing"
         await s.commit()
         try:
-            ccid = await telnyx.dial(senior.phone_e164, {"kind": "companion", "id": call.id})
+            ccid = await twilio.dial(senior.phone_e164, {"kind": "companion", "id": call.id})
         except Exception as e:
             call.status = "failed"
             call.summary = f"Could not place the call: {e}"
             await s.commit()
             return
-        call.telnyx_call_control_id = ccid
+        call.provider_call_id = ccid
         await s.commit()
     await events.flush()
 
@@ -241,20 +244,11 @@ async def handle_companion(etype: str, payload: dict, call_id: str) -> None:
                 call.status = "in_progress"
                 call.started_at = utcnow()
                 st["phase"] = "talking"
-                if st.get("mode") == "assistant":
-                    call.engine_state = st
-                    await s.commit()
-                    await telnyx.ai_assistant_start(
-                        ccid,
-                        llm.hugh_system(senior.display_name, st.get("previous", []), call.recall_question or ""),
-                        f"Hello {senior.display_name}, it's Hugh. How are you today?",
-                    )
-                    return
                 first = await llm.companion_reply(senior.display_name, 0, call.recall_question or "", st.get("previous", []), [])
                 call.transcript = [{"speaker": "hugh", "text": first["line"], "t_ms": 0}]
                 call.engine_state = st
                 await s.commit()
-                await telnyx.speak(ccid, first["line"])
+                await twilio.speak(ccid, first["line"])
 
             elif etype in ("call.speak.ended", "call.playback.ended"):
                 if call.transcript and call.transcript[-1]["speaker"] == "hugh":
@@ -263,15 +257,15 @@ async def handle_companion(etype: str, payload: dict, call_id: str) -> None:
                     call.transcript = tr
                 if st.get("phase") == "closing":
                     await s.commit()
-                    await telnyx.hangup(ccid)
+                    await twilio.hangup(ccid)
                 elif not st.get("transcribing"):
                     st["transcribing"] = True
                     call.engine_state = st
                     await s.commit()
-                    await telnyx.transcription_start(ccid)
+                    await twilio.transcription_start(ccid)
                 else:
                     await s.commit()
-                    await telnyx.listen_again(ccid)
+                    await twilio.listen_again(ccid)
 
             elif etype == "call.transcription":
                 td = payload.get("transcription_data") or {}
@@ -289,20 +283,19 @@ async def handle_companion(etype: str, payload: dict, call_id: str) -> None:
                 if reply.get("line"):
                     call.transcript = [*call.transcript, {"speaker": "hugh", "text": reply["line"], "t_ms": _ms_since(call.started_at)}]
                     await s.commit()
-                    await telnyx.speak(ccid, reply["line"])
+                    await twilio.speak(ccid, reply["line"])
                 else:
                     await s.commit()
-                    await telnyx.hangup(ccid)
+                    await twilio.hangup(ccid)
 
-            elif etype == "call.ai_gather.message_history_updated":
-                history = payload.get("message_history") or []
-                now = _ms_since(call.started_at)
-                call.transcript = [
-                    {"speaker": "hugh" if m.get("role") == "assistant" else "senior", "text": str(m.get("content", "")), "t_ms": now}
-                    for m in history
-                    if m.get("role") in ("assistant", "user") and m.get("content")
-                ]
-                await s.commit()
+            elif etype == "call.silence":
+                if st.get("phase") != "closing":
+                    bye = f"I can't quite hear you, {senior.display_name}. I'll call again tomorrow. Take care!"
+                    st["phase"] = "closing"
+                    call.engine_state = st
+                    call.transcript = [*call.transcript, {"speaker": "hugh", "text": bye, "t_ms": _ms_since(call.started_at)}]
+                    await s.commit()
+                    await twilio.speak(ccid, bye)
 
             elif etype == "call.hangup":
                 await finalize_companion(s, call, senior)
@@ -352,15 +345,15 @@ async def handle_event(event: dict) -> None:
                 return
             s.add(ProcessedEvent(event_id=eid))
             await s.commit()
-        state = telnyx.decode_state(payload.get("client_state"))
+        state = twilio.decode_state(payload.get("client_state"))
         kind, obj_id = state.get("kind"), state.get("id")
         ccid = payload.get("call_control_id")
         if not kind and ccid:
-            pc = (await s.execute(select(PracticeCall.id).where(PracticeCall.telnyx_call_control_id == ccid))).scalar()
+            pc = (await s.execute(select(PracticeCall.id).where(PracticeCall.provider_call_id == ccid))).scalar()
             if pc:
                 kind, obj_id = "practice", pc
             else:
-                cc = (await s.execute(select(CompanionCall.id).where(CompanionCall.telnyx_call_control_id == ccid))).scalar()
+                cc = (await s.execute(select(CompanionCall.id).where(CompanionCall.provider_call_id == ccid))).scalar()
                 if cc:
                     kind, obj_id = "companion", cc
     if kind == "practice" and obj_id:

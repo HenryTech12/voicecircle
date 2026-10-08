@@ -1,4 +1,4 @@
-from app.services import telnyx
+from app.services import twilio
 
 from .conftest import API, make_circle
 
@@ -47,10 +47,10 @@ async def test_call_connects_and_plays_cloned_opener(client, auth):
     c = await get_call(client, auth, call["id"])
     assert c["status"] == "in_progress" and c["started_at"]
     assert c["transcript"][0]["speaker"] == "caller" and "Grandma Ada" in c["transcript"][0]["text"]
-    ccid = next(iter(telnyx.MOCK_CALLS))
-    actions = telnyx.MOCK_CALLS[ccid]["actions"]
+    ccid = next(iter(twilio.MOCK_CALLS))
+    actions = twilio.MOCK_CALLS[ccid]["actions"]
     assert actions[0][0] == "playback" and "/api/v1/media/" in actions[0][1]  # cloned voice audio
-    assert telnyx.MOCK_CALLS[ccid]["transcribing"] is True
+    assert twilio.MOCK_CALLS[ccid]["transcribing"] is True
 
 
 async def test_hang_up_early_scores_100(client, auth):
@@ -62,7 +62,7 @@ async def test_hang_up_early_scores_100(client, auth):
     assert c["status"] == "completed"
     assert c["outcome"] == "hung_up_early" and c["score"] == 100
     assert c["feedback"]["hung_up_by_senior"] is True
-    assert any(s["to"] == "+2348010000001" and "practice call" in s["text"] for s in telnyx.SENT_SMS)  # debrief
+    assert any(s["to"] == "+2348010000001" and "practice call" in s["text"] for s in twilio.SENT_SMS)  # debrief
     alerts = (await client.get(f"{API}/circles/{data['circle']['id']}/alerts", headers=auth)).json()
     assert alerts == []
 
@@ -89,7 +89,7 @@ async def test_complied_creates_urgent_alert_and_sms_to_family(client, auth):
     assert c["outcome"] == "complied" and c["score"] == 0
     alerts = (await client.get(f"{API}/circles/{data['circle']['id']}/alerts", headers=auth)).json()
     assert alerts[0]["type"] == "scam_risk" and alerts[0]["severity"] == "urgent"
-    assert any(s["to"] == "+2348010000002" for s in telnyx.SENT_SMS)  # trusted contact notified
+    assert any(s["to"] == "+2348010000002" for s in twilio.SENT_SMS)  # trusted contact notified
 
 
 async def test_hesitated_when_she_catches_on(client, auth):
@@ -113,8 +113,8 @@ async def test_safety_stop_when_reading_digits(client, auth):
     assert c["status"] == "completed"
     assert c["safety_stop"] is True and c["outcome"] == "complied"
     assert c["transcript"][-1]["speaker"] == "system" and "practice call" in c["transcript"][-1]["text"]
-    ccid = next(iter(telnyx.MOCK_CALLS))
-    assert ("speak", c["transcript"][-1]["text"]) in telnyx.MOCK_CALLS[ccid]["actions"]
+    ccid = next(iter(twilio.MOCK_CALLS))
+    assert ("speak", c["transcript"][-1]["text"]) in twilio.MOCK_CALLS[ccid]["actions"]
     assert c["feedback"]["hung_up_by_senior"] is False
     # the digits were never stored
     assert "4111" not in str(c["transcript"]) and "[personal details removed]" in str(c["transcript"])
@@ -176,8 +176,8 @@ async def test_cancel_call(client, auth):
     call = await start_call(client, auth, data)
     r = await client.post(f"{API}/practice-calls/{call['id']}/cancel", headers=auth)
     assert r.status_code == 200 and r.json()["status"] == "cancelled"
-    ccid = next(iter(telnyx.MOCK_CALLS))
-    assert telnyx.MOCK_CALLS[ccid]["hung_up"] is True
+    ccid = next(iter(twilio.MOCK_CALLS))
+    assert twilio.MOCK_CALLS[ccid]["hung_up"] is True
     r = await client.post(f"{API}/practice-calls/{call['id']}/cancel", headers=auth)
     assert r.status_code == 409
 
@@ -192,7 +192,7 @@ async def test_scheduled_call_is_not_started_immediately(client, auth):
     )
     assert r.status_code == 201
     c = await get_call(client, auth, r.json()["id"])
-    assert c["status"] == "queued" and telnyx.MOCK_CALLS == {}
+    assert c["status"] == "queued" and twilio.MOCK_CALLS == {}
 
 
 async def test_list_and_access(client, auth, other_auth):
@@ -227,25 +227,25 @@ async def test_simulator_errors(client, auth, monkeypatch):
 
 
 async def test_no_answer(client, auth):
-    """If Telnyx reports hangup before answer, the call is no_answer."""
+    """If Twilio reports hangup before answer, the call is no_answer."""
     from app.services import calls, events
 
     data = await make_circle(client, auth)
     # intercept dial so no answered event is emitted
-    orig = telnyx.dial
+    orig = twilio.dial
 
     async def dial_no_answer(to, state):
         ccid = await orig(to, state)
         events._inline_queue.clear()
-        telnyx.MOCK_CALLS[ccid]["hung_up"] = True
-        events.emit(events.make_event("call.hangup", {"call_control_id": ccid, "client_state": telnyx.MOCK_CALLS[ccid]["client_state"]}))
+        twilio.MOCK_CALLS[ccid]["hung_up"] = True
+        events.emit(events.make_event("call.hangup", {"call_control_id": ccid, "client_state": twilio.MOCK_CALLS[ccid]["client_state"]}))
         return ccid
 
-    telnyx.dial = dial_no_answer
+    twilio.dial = dial_no_answer
     try:
         call = await start_call(client, auth, data)
     finally:
-        telnyx.dial = orig
+        twilio.dial = orig
     c = await get_call(client, auth, call["id"])
     assert c["status"] == "no_answer"
     assert calls.TERMINAL >= {"no_answer"}
@@ -253,13 +253,13 @@ async def test_no_answer(client, auth):
 
 async def test_dial_failure_marks_failed(client, auth, monkeypatch):
     async def boom(*a, **k):
-        raise RuntimeError("Telnyx rejected the number")
+        raise RuntimeError("Twilio rejected the number")
 
-    monkeypatch.setattr(telnyx, "dial", boom)
+    monkeypatch.setattr(twilio, "dial", boom)
     data = await make_circle(client, auth)
     call = await start_call(client, auth, data)
     c = await get_call(client, auth, call["id"])
-    assert c["status"] == "failed" and "Telnyx rejected" in c["feedback"]["error"]
+    assert c["status"] == "failed" and "Twilio rejected" in c["feedback"]["error"]
 
 
 async def test_auto_senior_mode_runs_whole_call(client, auth, monkeypatch):

@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..db import Alert, AuditLog, CircleMember
-from . import telnyx
+from . import twilio
 
 log = logging.getLogger("voicecircle.notify")
 
@@ -27,5 +27,5 @@ async def create_alert(
         )
         for m in res.scalars():
             if m.phone_e164:
-                await telnyx.send_sms(m.phone_e164, f"VoiceCircle: {title}. {message}")
+                await twilio.send_sms(m.phone_e164, f"VoiceCircle: {title}. {message}")
     return alert

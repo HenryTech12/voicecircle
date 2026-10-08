@@ -1,32 +1,37 @@
+# Render blueprint for the VoiceCircle API (the frontend is deployed on Vercel from web/).
 services:
   - type: web
     name: voicecircle-api
     runtime: docker
     rootDir: api
+    dockerfilePath: ./Dockerfile
+    plan: free            # use "starter" for live demos (free instances sleep after 15 min)
     healthCheckPath: /api/v1/health
     envVars:
+      - key: APP_ENV
+        value: prod
       - key: MOCK_PROVIDERS
         value: "true"
       - key: DEMO_MODE
         value: "true"
+      - key: AUTH_MODE
+        value: local
       - key: LOCAL_JWT_SECRET
         generateValue: true
-      - key: FRONTEND_ORIGIN
+      - key: STORAGE_BACKEND
+        value: local
+      - key: FRONTEND_ORIGIN       # your Vercel URL(s), comma-separated
         sync: false
-      - key: PUBLIC_BASE_URL
+      - key: PUBLIC_BASE_URL       # this service's own URL, e.g. https://voicecircle-api.onrender.com
         sync: false
-      - key: DATABASE_URL
+      - key: DATABASE_URL          # Supabase session pooler URL (postgresql+asyncpg://...:5432/postgres)
         sync: false
-  - type: web
-    name: voicecircle-web
-    runtime: static
-    rootDir: web
-    buildCommand: npm ci && npm run build
-    staticPublishPath: dist
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: VITE_API_BASE_URL
+      # Twilio (only read when MOCK_PROVIDERS=false)
+      - key: TWILIO_ACCOUNT_SID
         sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER    # +E.164
+        sync: false
+      - key: TWILIO_SAY_VOICE
+        value: Polly.Joanna-Neural

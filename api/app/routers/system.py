@@ -1,12 +1,11 @@
-"""Telnyx webhooks, signed media, mock call simulator and demo data."""
-import json
+"""Twilio webhooks, signed media, mock call simulator and demo data."""
 import logging
 import random
 from datetime import timedelta
 
 import jwt
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,7 +16,7 @@ from ..db import (
 from ..deps import ensure_member, get_current_user
 from ..errors import APIError, not_found
 from ..schemas import OkOut, SimSayIn
-from ..services import calls, events, metrics, scenarios, storage, telnyx
+from ..services import calls, events, metrics, scenarios, storage, twilio
 from .core import _delete_circle_data, circle_out
 from ..schemas import CircleOut
 
@@ -28,27 +27,90 @@ router = APIRouter()
 # ---------------------------------------------------------------- webhooks
 
 
-@router.post("/webhooks/telnyx", tags=["webhooks"])
-async def telnyx_webhook(request: Request, background: BackgroundTasks):
-    raw = await request.body()
-    sig = request.headers.get("telnyx-signature-ed25519")
-    ts = request.headers.get("telnyx-timestamp")
+def _public_url(request: Request) -> str:
+    """The exact URL Twilio called (behind Render's proxy request.url is http://internal)."""
+    q = request.url.query
+    return settings.PUBLIC_BASE_URL.rstrip("/") + request.url.path + (f"?{q}" if q else "")
+
+
+async def _twilio_params(request: Request) -> dict[str, str] | Response:
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    sig = request.headers.get("x-twilio-signature")
     if not settings.MOCK_PROVIDERS or sig:
-        if not telnyx.verify_signature(raw, sig, ts):
-            return JSONResponse(status_code=401, content={"error": {"code": "invalid_signature", "message": "Invalid webhook signature"}})
+        if not twilio.verify_signature(_public_url(request), params, sig):
+            return JSONResponse(status_code=403, content={"error": {"code": "invalid_signature", "message": "Invalid Twilio signature"}})
+    return params
+
+
+def _xml(body: str) -> Response:
+    return Response(content=body, media_type="application/xml")
+
+
+async def _run_turn(sid: str, state: str, etype: str, extra: dict, silence: int = 0) -> Response:
+    """Feed one event to the call engine and return its actions as TwiML."""
+    payload = {"call_control_id": sid, "client_state": state, **extra}
+    with twilio.twiml_context(sid) as ctx:
+        await calls.handle_event(events.make_event(etype, payload))
+        # Twilio plays audio and moves on by itself: tell the engine it finished speaking so it
+        # decides whether to listen (<Gather>) or hang up.
+        for _ in range(3):
+            if not twilio.needs_followup(ctx["verbs"]):
+                break
+            await calls.handle_event(events.make_event("call.speak.ended", payload))
+        verbs = list(ctx["verbs"])
+    if not verbs:
+        verbs = [("hangup",)] if etype == "call.answered" else [("gather",)]
+    return _xml(twilio.render_twiml(verbs, twilio.webhook_url("gather", state, silence=silence)))
+
+
+@router.post("/webhooks/twilio/voice", tags=["webhooks"])
+async def twilio_voice(request: Request, state: str = ""):
+    """Twilio fetches this when the senior answers. Returns the opening TwiML."""
+    params = await _twilio_params(request)
+    if isinstance(params, Response):
+        return params
+    sid = params.get("CallSid", "")
+    if not sid:
+        return JSONResponse(status_code=400, content={"error": {"code": "bad_payload", "message": "Missing CallSid"}})
+    return await _run_turn(sid, state, "call.answered", {"answered_by": params.get("AnsweredBy")})
+
+
+@router.post("/webhooks/twilio/gather", tags=["webhooks"])
+async def twilio_gather(request: Request, state: str = "", silence: int = 0):
+    """Twilio posts the senior's speech (SpeechResult) here after each <Gather>."""
+    params = await _twilio_params(request)
+    if isinstance(params, Response):
+        return params
+    sid = params.get("CallSid", "")
+    text = (params.get("SpeechResult") or "").strip()
+    if not text:
+        silence += 1
+        if silence >= settings.TWILIO_MAX_SILENCES:
+            return await _run_turn(sid, state, "call.silence", {}, silence=0)
+        return _xml(twilio.render_twiml([("gather",)], twilio.webhook_url("gather", state, silence=silence)))
     try:
-        event = json.loads(raw)
+        confidence = float(params.get("Confidence") or 0)
     except ValueError:
-        return JSONResponse(status_code=400, content={"error": {"code": "bad_payload", "message": "Invalid JSON"}})
-    if not isinstance(event, dict) or "data" not in event:
-        return JSONResponse(status_code=400, content={"error": {"code": "bad_payload", "message": "Missing data"}})
+        confidence = 0.0
+    return await _run_turn(
+        sid, state, "call.transcription",
+        {"transcription_data": {"transcript": text, "is_final": True, "confidence": confidence}},
+    )
 
-    async def _work():
+
+@router.post("/webhooks/twilio/status", tags=["webhooks"])
+async def twilio_status(request: Request, state: str = ""):
+    """Twilio's status callback: fires once when the call ends (completed, busy, no-answer, failed, canceled)."""
+    params = await _twilio_params(request)
+    if isinstance(params, Response):
+        return params
+    sid, status = params.get("CallSid", ""), params.get("CallStatus", "")
+    if sid and status in twilio.FINAL_STATUSES:
+        event = events.make_event("call.hangup", {"call_control_id": sid, "client_state": state, "call_status": status})
+        event["data"]["id"] = f"{sid}:final"  # idempotent if Twilio retries
         await calls.handle_event(event)
-        await events.flush()
-
-    background.add_task(_work)
-    return {"received": True}
+    return _xml(twilio.empty_twiml())
 
 
 # ---------------------------------------------------------------- media
@@ -74,7 +136,7 @@ async def _find_call(session: AsyncSession, call_id: str, user: User):
     if not call:
         raise not_found("Call")
     await ensure_member(session, call.circle_id, user)
-    if not call.telnyx_call_control_id:
+    if not call.provider_call_id:
         raise APIError(409, "not_connected", "The call hasn't connected yet")
     return call
 
@@ -90,7 +152,7 @@ async def sim_say(call_id: str, body: SimSayIn, user: User = Depends(get_current
     _require_mock()
     text = body.text.strip()
     call = await _find_call(session, call_id, user)
-    if not telnyx.mock_say(call.telnyx_call_control_id, text):
+    if not twilio.mock_say(call.provider_call_id, text):
         raise APIError(409, "call_ended", "This call has ended")
     await events.flush()
     return OkOut()
@@ -101,7 +163,7 @@ async def sim_hangup(call_id: str, user: User = Depends(get_current_user), sessi
     """Mock mode: pretend the senior hung up."""
     _require_mock()
     call = await _find_call(session, call_id, user)
-    if not telnyx.mock_hangup_by_senior(call.telnyx_call_control_id):
+    if not twilio.mock_hangup_by_senior(call.provider_call_id):
         raise APIError(409, "call_ended", "This call has ended")
     await events.flush()
     return OkOut()
@@ -111,7 +173,7 @@ async def sim_hangup(call_id: str, user: User = Depends(get_current_user), sessi
 async def sim_sms(user: User = Depends(get_current_user)):
     """Mock mode: SMS messages that would have been sent."""
     _require_mock()
-    return {"messages": telnyx.SENT_SMS[-50:]}
+    return {"messages": twilio.SENT_SMS[-50:]}
 
 
 # ---------------------------------------------------------------- demo data

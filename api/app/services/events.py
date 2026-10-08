@@ -1,7 +1,8 @@
-"""Event bus for Telnyx-style call events.
+"""Event bus for call events.
 
-Live mode: events arrive via POST /webhooks/telnyx and are processed in the background.
-Mock mode: the mock Telnyx client emits events here. With MOCK_EVENT_DELAY > 0 a single
+Live mode: Twilio webhooks (POST /webhooks/twilio/*) are turned into events and handled inline
+so the engine's actions can be returned as TwiML.
+Mock mode: the mock Twilio client emits events here. With MOCK_EVENT_DELAY > 0 a single
 worker processes them in order with a delay (feels like a real call). With
 MOCK_EVENT_DELAY == 0 events are queued and processed when flush() is called (tests).
 """

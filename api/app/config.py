@@ -10,7 +10,7 @@ class Settings(BaseSettings):
     # App
     APP_ENV: str = "dev"
     APP_NAME: str = "VoiceCircle API"
-    PUBLIC_BASE_URL: str = "http://localhost:8000"  # public URL Telnyx/Resemble can reach
+    PUBLIC_BASE_URL: str = "http://localhost:8000"  # public https URL Twilio/Resemble can reach
     FRONTEND_ORIGIN: str = "http://localhost:5173"
     DEMO_MODE: bool = True
 
@@ -36,15 +36,15 @@ class Settings(BaseSettings):
     MEDIA_URL_TTL_SECONDS: int = 600
     MAX_UPLOAD_MB: int = 20
 
-    # Telnyx
-    TELNYX_API_KEY: str = ""
-    TELNYX_PUBLIC_KEY: str = ""  # base64 ed25519 public key (Mission Control > Keys)
-    TELNYX_CONNECTION_ID: str = ""  # Call Control application id
-    TELNYX_FROM_NUMBER: str = ""
-    TELNYX_MESSAGING_PROFILE_ID: str = ""
-    TELNYX_HUGH_ASSISTANT_ID: str = ""
-    TELNYX_TRANSCRIPTION_ENGINE: str = "Telnyx"
-    TELNYX_SPEAK_VOICE: str = "female"
+    # Twilio (Programmable Voice + Messaging)
+    TWILIO_ACCOUNT_SID: str = ""
+    TWILIO_AUTH_TOKEN: str = ""  # also used to verify X-Twilio-Signature on webhooks
+    TWILIO_FROM_NUMBER: str = ""  # your Twilio number, E.164
+    TWILIO_MESSAGING_SERVICE_SID: str = ""  # optional; used instead of From for SMS
+    TWILIO_SAY_VOICE: str = "Polly.Joanna-Neural"  # neutral voice for disclosures and Hugh
+    TWILIO_SPEECH_LANGUAGE: str = "en-US"
+    TWILIO_GATHER_TIMEOUT: int = 6  # seconds to wait for the senior to start speaking
+    TWILIO_MAX_SILENCES: int = 3  # silent turns in a row before the call wraps up
 
     # Resemble AI
     RESEMBLE_API_KEY: str = ""

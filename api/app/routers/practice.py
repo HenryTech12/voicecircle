@@ -7,7 +7,7 @@ from ..db import CircleMember, PracticeCall, User, get_session, utcnow
 from ..deps import ensure_member, get_current_user
 from ..errors import APIError, bad_request, not_found
 from ..schemas import PracticeCallIn, PracticeCallOut, ScenarioOut
-from ..services import calls, notify, scenarios, telnyx
+from ..services import calls, notify, scenarios, twilio
 
 router = APIRouter(tags=["practice"])
 
@@ -88,10 +88,10 @@ async def cancel_practice_call(call_id: str, user: User = Depends(get_current_us
     call = await _get_call(session, call_id, user)
     if call.status in calls.TERMINAL:
         raise APIError(409, "already_finished", "This call has already finished")
-    ccid = call.telnyx_call_control_id
+    ccid = call.provider_call_id
     call.status = "cancelled"
     call.ended_at = utcnow()
     await session.commit()
     if ccid:
-        await telnyx.hangup(ccid)
+        await twilio.hangup(ccid)
     return PracticeCallOut.model_validate(call)

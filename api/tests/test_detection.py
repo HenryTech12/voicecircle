@@ -1,5 +1,5 @@
 from app.routers.detection import decide
-from app.services import storage, telnyx
+from app.services import storage, twilio
 
 from .conftest import API, make_circle, wav_bytes
 
@@ -50,8 +50,8 @@ async def test_clone_from_practice_call_is_detected_as_fake(client, auth):
     )
     assert r.status_code == 201
     # grab the cloned opener audio that was played into the call
-    ccid = next(iter(telnyx.MOCK_CALLS))
-    url = telnyx.MOCK_CALLS[ccid]["actions"][0][1]
+    ccid = next(iter(twilio.MOCK_CALLS))
+    url = twilio.MOCK_CALLS[ccid]["actions"][0][1]
     clone_bytes = storage.resolve_media_token(url.rsplit("/", 1)[1]).read_bytes()
     r = await upload(client, auth, data, "recording_from_phone.wav", content=clone_bytes)
     assert (await result(client, auth, r.json()["id"]))["verdict"] == "fake"

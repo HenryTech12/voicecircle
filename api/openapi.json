@@ -1791,19 +1791,136 @@
         }
       }
     },
-    "/api/v1/webhooks/telnyx": {
+    "/api/v1/webhooks/twilio/voice": {
       "post": {
         "tags": [
           "webhooks"
         ],
-        "summary": "Telnyx Webhook",
-        "operationId": "telnyx_webhook_api_v1_webhooks_telnyx_post",
+        "summary": "Twilio Voice",
+        "description": "Twilio fetches this when the senior answers. Returns the opening TwiML.",
+        "operationId": "twilio_voice_api_v1_webhooks_twilio_voice_post",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "State"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/twilio/gather": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Twilio Gather",
+        "description": "Twilio posts the senior's speech (SpeechResult) here after each <Gather>.",
+        "operationId": "twilio_gather_api_v1_webhooks_twilio_gather_post",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "State"
+            }
+          },
+          {
+            "name": "silence",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Silence"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/twilio/status": {
+      "post": {
+        "tags": [
+          "webhooks"
+        ],
+        "summary": "Twilio Status",
+        "description": "Twilio's status callback: fires once when the call ends (completed, busy, no-answer, failed, canceled).",
+        "operationId": "twilio_status_api_v1_webhooks_twilio_status_post",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "State"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
               }
             }
           }

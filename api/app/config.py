@@ -1,11 +1,24 @@
 """Application settings loaded from environment variables (.env supported)."""
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @field_validator("AUTH_MODE", "STORAGE_BACKEND", mode="before")
+    @classmethod
+    def _clean_choice(cls, v):
+        return str(v).strip().strip("\"'").lower()
+
+    @field_validator("SUPABASE_URL", mode="before")
+    @classmethod
+    def _clean_supabase_url(cls, v):
+        # Dashboards often hold just "abc.supabase.co"; requests and JWKS need the scheme.
+        v = str(v or "").strip().strip("\"'").rstrip("/")
+        return f"https://{v}" if v and "://" not in v else v
 
     # App
     APP_ENV: str = "dev"

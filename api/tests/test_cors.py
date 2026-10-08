@@ -73,3 +73,11 @@ def _app(raw):
         return {}
 
     return app
+
+
+def test_supabase_url_and_auth_mode_are_normalized(monkeypatch):
+    from app.config import Settings
+
+    s = Settings(SUPABASE_URL=" abc.supabase.co/ ", AUTH_MODE=" Supabase ")
+    assert s.SUPABASE_URL == "https://abc.supabase.co"
+    assert s.AUTH_MODE == "supabase"

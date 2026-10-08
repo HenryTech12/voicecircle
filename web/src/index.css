@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html { font-size: 18px; }
+body { @apply bg-bg text-ink font-sans antialiased; line-height: 1.55; }
+h1, h2, h3 { text-wrap: balance; }
+.tabular, td, dd { font-variant-numeric: tabular-nums lining-nums; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

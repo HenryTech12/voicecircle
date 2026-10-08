@@ -1,0 +1,92 @@
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { api, setTokenProvider, tokenStore, type AuthConfig, type Me } from "./api";
+
+const SB_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const SB_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const supabase: SupabaseClient | null = SB_URL && SB_KEY ? createClient(SB_URL, SB_KEY) : null;
+
+interface AuthState {
+  config: AuthConfig | null;
+  me: Me | null;
+  loading: boolean;
+  error: string | null;
+  loginLocal: (email: string, name?: string) => Promise<void>;
+  sendMagicLink: (email: string) => Promise<void>;
+  logout: () => Promise<void>;
+  refreshMe: () => Promise<Me | null>;
+}
+
+const Ctx = createContext<AuthState | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const [config, setConfig] = useState<AuthConfig | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refreshMe = useCallback(async () => {
+    try {
+      const m = await api.me();
+      setMe(m);
+      return m;
+    } catch {
+      setMe(null);
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const cfg = await api.authConfig();
+        setConfig(cfg);
+        if (cfg.auth_mode === "supabase" && supabase) {
+          setTokenProvider(async () => (await supabase.auth.getSession()).data.session?.access_token ?? null);
+          supabase.auth.onAuthStateChange(() => void refreshMe());
+        }
+        if (cfg.auth_mode === "supabase" || tokenStore.get()) await refreshMe();
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setLoading(false);
+      }
+    })();
+    const onUnauthorized = () => setMe(null);
+    window.addEventListener("vc:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("vc:unauthorized", onUnauthorized);
+  }, [refreshMe]);
+
+  const loginLocal = useCallback(
+    async (email: string, name?: string) => {
+      const res = await api.devLogin(email, name);
+      tokenStore.set(res.access_token);
+      await refreshMe();
+    },
+    [refreshMe],
+  );
+
+  const sendMagicLink = useCallback(async (email: string) => {
+    if (!supabase) throw new Error("Supabase is not configured in this frontend (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY).");
+    const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
+    if (error) throw error;
+  }, []);
+
+  const logout = useCallback(async () => {
+    tokenStore.clear();
+    if (supabase) await supabase.auth.signOut();
+    setMe(null);
+  }, []);
+
+  const value = useMemo(
+    () => ({ config, me, loading, error, loginLocal, sendMagicLink, logout, refreshMe }),
+    [config, me, loading, error, loginLocal, sendMagicLink, logout, refreshMe],
+  );
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+export function useAuth() {
+  const v = useContext(Ctx);
+  if (!v) throw new Error("useAuth must be used inside AuthProvider");
+  return v;
+}

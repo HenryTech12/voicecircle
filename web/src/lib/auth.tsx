@@ -88,7 +88,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const sendMagicLink = useCallback(async (email: string) => {
     if (!supabase) throw new Error("Supabase is not configured in this frontend (SUPABASE_URL / SUPABASE_ANON_KEY).");
     const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
-    if (error) throw error;
+    if (error) {
+      const e = error as { status?: number; code?: string; message: string };
+      if (e.status === 429 || e.code === "over_email_send_rate_limit" || /rate limit/i.test(e.message)) {
+        throw new Error("Too many sign-in emails were requested. Please wait a few minutes and try again, and check your inbox and spam for a link we already sent.");
+      }
+      throw error;
+    }
   }, []);
 
   const logout = useCallback(async () => {

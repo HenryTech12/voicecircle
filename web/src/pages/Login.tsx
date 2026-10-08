@@ -11,21 +11,28 @@ export default function Login() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [sent, setSent] = useState(false);
+  const [cooldownUntil, setCooldownUntil] = useState(0);
 
   if (me) return <Navigate to="/" replace />;
   const local = config?.auth_mode !== "supabase";
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (Date.now() < cooldownUntil) {
+      setError(new Error("Please wait a minute before requesting another link."));
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       if (local) await loginLocal(email, name || undefined);
       else {
         await sendMagicLink(email);
+        setCooldownUntil(Date.now() + 60_000);
         setSent(true);
       }
     } catch (err) {
+      setCooldownUntil(Date.now() + 60_000);
       setError(err);
     } finally {
       setBusy(false);

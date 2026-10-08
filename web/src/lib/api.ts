@@ -82,6 +82,8 @@ export function setTokenProvider(fn: () => Promise<string | null>) {
   tokenProvider = fn;
 }
 
+export const getToken = () => tokenProvider();
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   const token = await tokenProvider();
@@ -102,7 +104,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const data = text ? safeJson(text) : null;
   if (!res.ok) {
     const err = (data as { error?: { code: string; message: string } } | null)?.error;
-    if (res.status === 401) window.dispatchEvent(new Event("vc:unauthorized"));
+    if (res.status === 401 && token) window.dispatchEvent(new Event("vc:unauthorized"));
     throw new ApiError(res.status, err?.code || "error", err?.message || `Something went wrong (${res.status}).`);
   }
   return data as T;

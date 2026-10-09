@@ -103,6 +103,31 @@ OPENAI_COMPATIBLE_URLS = {
 }
 
 
+DEFAULT_MODELS = {
+    "openai": "gpt-4o-mini",
+    "groq": "llama-3.3-70b-versatile",
+    "anthropic": "claude-haiku-4-5",
+}
+
+
+def effective_model() -> str:
+    """The configured model, unless it clearly belongs to another provider (e.g. gpt-* left over after
+    switching to Groq), in which case the provider's default is used instead of failing with a 404."""
+    provider, model = settings.LLM_PROVIDER, (settings.LLM_MODEL or "").strip()
+    wrong = (
+        not model
+        or (provider != "openai" and model.startswith(("gpt-", "o1", "o3", "o4")))
+        or (provider != "anthropic" and model.startswith("claude"))
+    )
+    return DEFAULT_MODELS.get(provider, DEFAULT_MODELS["openai"]) if wrong else model
+
+
+def _check(r: httpx.Response) -> None:
+    if r.is_success:
+        return
+    raise RuntimeError(f"{settings.LLM_PROVIDER} API {r.status_code} (model={effective_model()}): {r.text[:300]}")
+
+
 async def complete_json(system: str, user: str, max_tokens: int = 400) -> dict:
     if settings.LLM_PROVIDER == "anthropic":
         async with httpx.AsyncClient(timeout=10) as c:
@@ -114,13 +139,13 @@ async def complete_json(system: str, user: str, max_tokens: int = 400) -> dict:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": settings.LLM_MODEL,
+                    "model": effective_model(),
                     "max_tokens": max_tokens,
                     "system": system + "\nRespond with a single JSON object only.",
                     "messages": [{"role": "user", "content": user}],
                 },
             )
-            r.raise_for_status()
+            _check(r)
             text = "".join(b.get("text", "") for b in r.json()["content"])
     else:
         # OpenAI and Groq share the same chat-completions API; only the base URL differs.
@@ -131,7 +156,7 @@ async def complete_json(system: str, user: str, max_tokens: int = 400) -> dict:
                 f"{base.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.LLM_API_KEY}"},
                 json={
-                    "model": settings.LLM_MODEL,
+                    "model": effective_model(),
                     "max_tokens": max_tokens,
                     "response_format": {"type": "json_object"},
                     "messages": [
@@ -140,7 +165,7 @@ async def complete_json(system: str, user: str, max_tokens: int = 400) -> dict:
                     ],
                 },
             )
-            r.raise_for_status()
+            _check(r)
             text = r.json()["choices"][0]["message"]["content"]
     m = re.search(r"\{.*\}", text, re.S)
     return json.loads(m.group(0) if m else text)

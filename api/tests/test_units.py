@@ -132,3 +132,14 @@ async def test_groq_provider_uses_groq_endpoint(monkeypatch):
     assert out["line"] == "Hello Ada"
     assert seen["url"] == "https://api.groq.com/openai/v1/chat/completions"
     assert seen["auth"] == "Bearer gsk_test"
+
+
+def test_effective_model_ignores_other_providers_model(monkeypatch):
+    from app.config import settings
+    from app.services import llm
+
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(settings, "LLM_MODEL", "gpt-4o-mini")
+    assert llm.effective_model() == "llama-3.3-70b-versatile"
+    monkeypatch.setattr(settings, "LLM_MODEL", "llama-3.1-8b-instant")
+    assert llm.effective_model() == "llama-3.1-8b-instant"

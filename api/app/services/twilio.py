@@ -105,35 +105,45 @@ def needs_followup(verbs: list[tuple]) -> bool:
     return bool(verbs) and verbs[-1][0] in ("play", "say")
 
 
+def _verb_xml(v: tuple) -> str:
+    if v[0] == "play":
+        return f"<Play>{escape(v[1])}</Play>"
+    return (
+        f"<Say voice={quoteattr(settings.TWILIO_SAY_VOICE)} language={quoteattr(settings.TWILIO_SPEECH_LANGUAGE)}>"
+        f"{escape(v[1])}</Say>"
+    )
+
+
 def render_twiml(verbs: list[tuple], gather_action: str) -> str:
+    """Turn engine verbs into TwiML. Prompts (<Say>/<Play>) that come right before a listen step are nested
+    inside the <Gather>, so the person can answer while Hugh is still finishing (barge-in) and listening starts
+    the instant the prompt ends, with no dead air in between."""
     out: list[str] = []
+    pending: list[tuple] = []
     ended = False
     for v in verbs:
-        if v[0] == "play":
-            out.append(f"<Play>{escape(v[1])}</Play>")
-        elif v[0] == "say":
-            out.append(
-                f"<Say voice={quoteattr(settings.TWILIO_SAY_VOICE)} language={quoteattr(settings.TWILIO_SPEECH_LANGUAGE)}>"
-                f"{escape(v[1])}</Say>"
-            )
+        if v[0] in ("play", "say"):
+            pending.append(v)
         elif v[0] == "hangup":
+            out.extend(_verb_xml(p) for p in pending)
             out.append("<Hangup/>")
-            ended = True
+            pending, ended = [], True
             break
         elif v[0] == "gather":
-            out.append(gather_xml(gather_action))
-            ended = True
+            out.append(gather_xml(gather_action, pending))
+            pending, ended = [], True
             break
     if not ended:
-        out.append(gather_xml(gather_action))
+        out.append(gather_xml(gather_action, pending))
     return '<?xml version="1.0" encoding="UTF-8"?><Response>' + "".join(out) + "</Response>"
 
 
-def gather_xml(action: str) -> str:
+def gather_xml(action: str, prompts: list[tuple] | None = None) -> str:
+    inner = "".join(_verb_xml(p) for p in prompts or [])
     return (
         f'<Gather input="speech" method="POST" action={quoteattr(action)} speechTimeout="auto" '
         f'timeout="{settings.TWILIO_GATHER_TIMEOUT}" language={quoteattr(settings.TWILIO_SPEECH_LANGUAGE)} '
-        f'actionOnEmptyResult="true"/>'
+        f'speechModel="phone_call" enhanced="true" actionOnEmptyResult="true">{inner}</Gather>'
     )
 
 

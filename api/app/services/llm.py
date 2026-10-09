@@ -97,9 +97,15 @@ def _llm_enabled() -> bool:
     return not settings.MOCK_PROVIDERS and bool(settings.LLM_API_KEY)
 
 
+OPENAI_COMPATIBLE_URLS = {
+    "openai": "https://api.openai.com/v1",
+    "groq": "https://api.groq.com/openai/v1",
+}
+
+
 async def complete_json(system: str, user: str, max_tokens: int = 400) -> dict:
     if settings.LLM_PROVIDER == "anthropic":
-        async with httpx.AsyncClient(timeout=30) as c:
+        async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -117,9 +123,12 @@ async def complete_json(system: str, user: str, max_tokens: int = 400) -> dict:
             r.raise_for_status()
             text = "".join(b.get("text", "") for b in r.json()["content"])
     else:
-        async with httpx.AsyncClient(timeout=30) as c:
+        # OpenAI and Groq share the same chat-completions API; only the base URL differs.
+        base = settings.LLM_BASE_URL or OPENAI_COMPATIBLE_URLS.get(settings.LLM_PROVIDER, OPENAI_COMPATIBLE_URLS["openai"])
+        # Twilio abandons a webhook after ~15s, so fail fast and let the scripted fallback answer instead.
+        async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(
-                "https://api.openai.com/v1/chat/completions",
+                f"{base.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {settings.LLM_API_KEY}"},
                 json={
                     "model": settings.LLM_MODEL,

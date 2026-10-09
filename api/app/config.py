@@ -13,6 +13,16 @@ class Settings(BaseSettings):
     def _clean_choice(cls, v):
         return str(v).strip().strip("\"'").lower()
 
+    @field_validator(
+        "LLM_API_KEY", "LLM_PROVIDER", "LLM_MODEL", "SUPABASE_JWT_SECRET", "SUPABASE_SERVICE_ROLE_KEY",
+        "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "RESEMBLE_API_KEY", "RESEMBLE_PROJECT_UUID",
+        mode="before",
+    )
+    @classmethod
+    def _strip_secret(cls, v):
+        # Keys pasted into dashboards often carry a trailing newline, spaces or quotes, which makes providers answer 401.
+        return str(v or "").strip().strip("\"'").strip()
+
     @field_validator("SUPABASE_URL", mode="before")
     @classmethod
     def _clean_supabase_url(cls, v):
@@ -66,7 +76,8 @@ class Settings(BaseSettings):
     IDENTITY_DISTANCE_LOWER_IS_BETTER: bool = True
 
     # LLM
-    LLM_PROVIDER: str = "openai"  # openai | anthropic
+    LLM_PROVIDER: str = "openai"  # openai | groq | anthropic
+    LLM_BASE_URL: str = ""  # optional override for any OpenAI-compatible API
     LLM_API_KEY: str = ""
     LLM_MODEL: str = "gpt-4o-mini"
 

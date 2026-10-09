@@ -105,7 +105,8 @@ async def test_live_practice_call_end_to_end(client, auth, live):
     assert r.status_code == 200
     assert "<Play>http://test/api/v1/media/fake-" in r.text
     assert '<Gather input="speech"' in r.text and "webhooks/twilio/gather?state=" in r.text
-    assert r.text.index("<Play>") < r.text.index("<Gather")
+    # the prompt is nested inside the <Gather> so the senior can answer without waiting (barge-in)
+    assert r.text.index("<Gather") < r.text.index("<Play>") < r.text.index("</Gather>")
     gather_url = r.text.split('action="')[1].split('"')[0].replace("&amp;", "&")
     c = (await client.get(f"{API}/practice-calls/{call_id}", headers=auth)).json()
     assert c["status"] == "in_progress" and c["transcript"][0]["speaker"] == "caller"
@@ -434,3 +435,27 @@ async def test_twilio_post_encodes_repeated_form_keys(monkeypatch):
     assert out == {"sid": "CA123"}
     assert seen["body"].count("StatusCallbackEvent=") == 2
     assert seen["ctype"] == "application/x-www-form-urlencoded"
+
+
+async def test_live_companion_call_is_a_back_and_forth_conversation(client, auth, live):
+    data = await make_circle(client, auth)
+    live.on()
+    r = await client.post(f"{API}/members/{data['senior']['id']}/companion-calls", headers=auth)
+    assert r.status_code == 201, r.text
+    call_id = r.json()["id"]
+    form = dict(live.sent[0][1])
+    sid = "CAlive" + "7".zfill(26)
+
+    r = await _signed_post(client, form["Url"], {"CallSid": sid, "CallStatus": "in-progress"})
+    assert "<Say" in r.text and "<Gather" in r.text, r.text
+    gather_url = r.text.split('action="')[1].split('"')[0].replace("&amp;", "&")
+
+    # Three turns: each answer must get a spoken reply AND another Gather (until Hugh says goodbye).
+    for said in ["I'm fine", "I had rice and stew", "Yes it was nice"]:
+        r = await _signed_post(client, gather_url, {"CallSid": sid, "SpeechResult": said, "Confidence": "0.9"})
+        assert r.status_code == 200, r.text
+        assert "<Say" in r.text, f"Hugh did not reply to {said!r}: {r.text}"
+        assert r.text.index("<Gather") < r.text.index("<Say") if "<Gather" in r.text else True
+        assert "<Gather" in r.text or "<Hangup/>" in r.text
+    c = (await client.get(f"{API}/companion-calls/{call_id}", headers=auth)).json()
+    assert [t["speaker"] for t in c["transcript"]][:4] == ["hugh", "senior", "hugh", "senior"]

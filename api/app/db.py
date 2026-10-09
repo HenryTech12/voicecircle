@@ -1,9 +1,10 @@
 """Database engine, session factory and ORM models (SQLAlchemy 2, async)."""
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
-from sqlalchemy import JSON, TypeDecorator, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, TypeDecorator, inspect, text, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -195,9 +196,44 @@ else:
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
+def _add_missing_columns(sync_conn) -> None:
+    """Lightweight auto-migration: create_all() never alters existing tables, so a database created by an
+    older version of the schema would be missing newer columns (e.g. practice_calls.provider_call_id).
+    Add any column the models define that the live table lacks."""
+    log = logging.getLogger("voicecircle.db")
+    insp = inspect(sync_conn)
+    dialect = sync_conn.dialect
+    preparer = dialect.identifier_preparer
+    existing_tables = set(insp.get_table_names())
+    for table in Base.metadata.sorted_tables:
+        if table.name not in existing_tables:
+            continue
+        have = {c["name"] for c in insp.get_columns(table.name)}
+        for col in table.columns:
+            if col.name in have:
+                continue
+            ddl = f"ALTER TABLE {preparer.quote(table.name)} ADD COLUMN {preparer.quote(col.name)} {col.type.compile(dialect=dialect)}"
+            default = getattr(col.default, "arg", None) if col.default is not None else None
+            if isinstance(default, bool):
+                ddl += f" DEFAULT {'TRUE' if default else 'FALSE'}" if not dialect.name == "sqlite" else f" DEFAULT {int(default)}"
+            elif isinstance(default, (int, float)):
+                ddl += f" DEFAULT {default}"
+            elif isinstance(default, str):
+                ddl += " DEFAULT '" + default.replace("'", "''") + "'"
+            # Added nullable on purpose: existing rows have no value, and NOT NULL would fail the ALTER.
+            sync_conn.execute(text(ddl))
+            log.warning("Migrated: added column %s.%s", table.name, col.name)
+            if col.index:
+                idx = f"ix_{table.name}_{col.name}"
+                sync_conn.execute(
+                    text(f"CREATE INDEX IF NOT EXISTS {preparer.quote(idx)} ON {preparer.quote(table.name)} ({preparer.quote(col.name)})")
+                )
+
+
 async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_add_missing_columns)
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:

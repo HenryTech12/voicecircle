@@ -30,7 +30,7 @@ import json
 import logging
 import uuid
 from contextlib import contextmanager
-from urllib.parse import quote
+from urllib.parse import urlencode, quote
 from xml.sax.saxutils import escape, quoteattr
 
 import httpx
@@ -219,7 +219,13 @@ def _mock_auto_reply(sid: str) -> None:
 async def _post(path: str, data: dict | list) -> dict:
     sid = settings.TWILIO_ACCOUNT_SID
     async with httpx.AsyncClient(timeout=20, auth=(sid, settings.TWILIO_AUTH_TOKEN)) as c:
-        r = await c.post(f"{API}/Accounts/{sid}{path}", data=data)
+        # `data` may be a list of (key, value) pairs so keys can repeat (e.g. StatusCallbackEvent). Recent httpx
+        # versions treat a non-dict `data=` as a raw sync stream, which crashes an AsyncClient, so encode it here.
+        r = await c.post(
+            f"{API}/Accounts/{sid}{path}",
+            content=urlencode(data),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
         if r.status_code >= 400:
             log.error("Twilio %s failed: %s %s", path, r.status_code, r.text[:500])
         r.raise_for_status()

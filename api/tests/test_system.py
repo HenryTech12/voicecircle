@@ -415,3 +415,22 @@ async def test_supabase_storage_creates_missing_bucket_and_retries(monkeypatch):
     assert path.startswith("voice-samples/")
     assert ("POST", "/storage/v1/bucket") in calls
     assert storage._sb_headers() == {"apikey": "sb_secret_abc"}
+
+
+async def test_twilio_post_encodes_repeated_form_keys(monkeypatch):
+    import httpx
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.content.decode()
+        seen["ctype"] = request.headers["content-type"]
+        return httpx.Response(201, json={"sid": "CA123"})
+
+    transport = httpx.MockTransport(handler)
+    real = httpx.AsyncClient
+    monkeypatch.setattr(twilio.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
+    out = await twilio._post("/Calls.json", [("To", "+2348012345678"), ("StatusCallbackEvent", "initiated"), ("StatusCallbackEvent", "completed")])
+    assert out == {"sid": "CA123"}
+    assert seen["body"].count("StatusCallbackEvent=") == 2
+    assert seen["ctype"] == "application/x-www-form-urlencoded"

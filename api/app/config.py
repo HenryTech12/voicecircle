@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     @field_validator(
         "LLM_API_KEY", "LLM_PROVIDER", "LLM_MODEL", "SUPABASE_JWT_SECRET", "SUPABASE_SERVICE_ROLE_KEY",
-        "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "RESEMBLE_API_KEY", "RESEMBLE_PROJECT_UUID",
+        "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "RESEMBLE_API_KEY", "RESEMBLE_PROJECT_UUID", "FISH_API_KEY", "FISH_MODEL", "VOICE_PROVIDER",
         mode="before",
     )
     @classmethod
@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     TWILIO_MAX_SILENCES: int = 3  # silent turns in a row before the call wraps up
 
     # Resemble AI
+    VOICE_PROVIDER: str = "fish"  # fish | resemble (cloning + text-to-speech)
+    FISH_API_KEY: str = ""
+    FISH_MODEL: str = "s2.1-pro-free"
     RESEMBLE_API_KEY: str = ""
     RESEMBLE_PROJECT_UUID: str = ""
     RESEMBLE_FALLBACK_VOICE_UUID: str = ""  # used for disclosures / Hugh fallback

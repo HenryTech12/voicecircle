@@ -100,7 +100,7 @@ async def create_identity(name: str, wav_bytes: bytes) -> str:
 
 
 async def delete_identity(identity_id: str | None) -> None:
-    if not identity_id or settings.MOCK_PROVIDERS:
+    if not identity_id or settings.MOCK_PROVIDERS or not settings.RESEMBLE_API_KEY:
         return
     async with httpx.AsyncClient(timeout=30) as c:
         await c.delete(f"{APP}/identity/{identity_id}", headers=_h())
@@ -136,6 +136,8 @@ async def detect_synthetic(wav_bytes: bytes, filename: str = "clip.wav") -> floa
         if "unsure" in name:
             return settings.DETECT_FAKE_THRESHOLD
         return 0.07
+    if not settings.RESEMBLE_API_KEY:
+        raise ResembleError("Deepfake detection needs RESEMBLE_API_KEY, which isn't configured")
     async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(
             f"{APP}/detect", headers=_h(json_body=False), files={"file": (filename, wav_bytes, "audio/wav")}
@@ -169,6 +171,8 @@ def _score_from_metrics(metrics: dict) -> float:
 async def verify_speaker(identity_id: str | None, audio_url: str, filename: str = "") -> float | None:
     """Similarity (0..1) between the clip and the enrolled identity. None if unknown."""
     if not identity_id:
+        return None
+    if not settings.MOCK_PROVIDERS and not settings.RESEMBLE_API_KEY:
         return None
     if settings.MOCK_PROVIDERS:
         name = filename.lower()

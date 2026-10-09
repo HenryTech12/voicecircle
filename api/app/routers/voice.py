@@ -4,11 +4,12 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
 from ..db import CircleMember, SessionLocal, User, VoiceProfile, get_session, utcnow
 from ..deps import ensure_member, get_current_user, get_member_checked
 from ..errors import APIError, bad_request
 from ..schemas import OkOut, VoicePromptsOut, VoiceStatusOut
-from ..services import audio, notify, resemble, storage
+from ..services import audio, notify, resemble, storage, voices
 
 log = logging.getLogger("voicecircle.voice")
 router = APIRouter(tags=["voice"])
@@ -52,8 +53,10 @@ async def enroll_voice_task(profile_id: str) -> None:
         try:
             wav = await storage.read(vp.sample_path)
             url = await storage.signed_url(vp.sample_path, ttl=3600)
-            vp.resemble_voice_uuid = await resemble.create_voice(f"VoiceCircle {member.display_name} {member.id[:8]}", url)
-            vp.resemble_identity_id = await resemble.create_identity(f"{member.display_name} {member.id[:8]}", wav)
+            vp.resemble_voice_uuid = await voices.create_voice(f"VoiceCircle {member.display_name} {member.id[:8]}", wav, url)
+            # Speaker matching needs Resemble; without its key, enrollment still succeeds (voice cloning only).
+            if settings.MOCK_PROVIDERS or settings.RESEMBLE_API_KEY:
+                vp.resemble_identity_id = await resemble.create_identity(f"{member.display_name} {member.id[:8]}", wav)
             vp.status = "enrolled"
             vp.error = None
             await notify.audit(s, "voice.enrolled", member.circle_id, member.user_id, member_id=member.id)
@@ -87,7 +90,7 @@ async def upload_voice(
     path = await storage.save("voice-samples", wav, ext)
     if member.voice:
         old = member.voice
-        await resemble.delete_voice(old.resemble_voice_uuid)
+        await voices.delete_voice(old.resemble_voice_uuid)
         await resemble.delete_identity(old.resemble_identity_id)
         await storage.delete(old.sample_path)
         await session.delete(old)
@@ -120,7 +123,7 @@ async def delete_voice(member_id: str, user: User = Depends(get_current_user), s
     if not member.voice:
         raise APIError(404, "not_found", "No voice enrolled")
     vp = member.voice
-    await resemble.delete_voice(vp.resemble_voice_uuid)
+    await voices.delete_voice(vp.resemble_voice_uuid)
     await resemble.delete_identity(vp.resemble_identity_id)
     await storage.delete(vp.sample_path)
     await session.delete(vp)

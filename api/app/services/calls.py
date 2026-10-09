@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from ..config import settings
 from ..db import CircleMember, CompanionCall, PracticeCall, ProcessedEvent, SessionLocal, utcnow
-from . import events, llm, metrics, notify, resemble, scenarios, storage, twilio
+from . import events, llm, metrics, notify, scenarios, storage, twilio, voices
 
 log = logging.getLogger("voicecircle.calls")
 _locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -28,7 +28,7 @@ def _ms_since(start: datetime | None) -> int:
 async def _tts_url(text: str, voice_uuid: str | None) -> str | None:
     """Synthesize text in the cloned voice and return a fetchable URL (None on failure)."""
     try:
-        wav = await resemble.synthesize(text, voice_uuid)
+        wav = await voices.synthesize(text, voice_uuid)
         path = await storage.save("call-audio", wav, "wav")
         return await storage.signed_url(path)
     except Exception as e:

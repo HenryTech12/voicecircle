@@ -108,3 +108,27 @@ def test_summarize_fallback():
     ]
     out = llm.summarize_fallback(tr, "What did you have for breakfast this morning?")
     assert out["mood"] == "low" and out["recall"] == "none"
+
+
+async def test_groq_provider_uses_groq_endpoint(monkeypatch):
+    import httpx
+
+    from app.config import settings
+    from app.services import llm
+
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers["authorization"]
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"line": "Hello Ada", "end": false}'}}]})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(llm.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(settings, "LLM_API_KEY", "gsk_test")
+    monkeypatch.setattr(settings, "LLM_MODEL", "llama-3.3-70b-versatile")
+    out = await llm.complete_json("sys", "user")
+    assert out["line"] == "Hello Ada"
+    assert seen["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert seen["auth"] == "Bearer gsk_test"

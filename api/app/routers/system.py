@@ -84,6 +84,7 @@ async def twilio_gather(request: Request, state: str = "", silence: int = 0):
         return params
     sid = params.get("CallSid", "")
     text = (params.get("SpeechResult") or "").strip()
+    log.info("Twilio gather: call=%s heard=%r confidence=%s silence_count=%s", sid[-6:], text[:80], params.get("Confidence"), silence)
     if not text:
         silence += 1
         if silence >= settings.TWILIO_MAX_SILENCES:

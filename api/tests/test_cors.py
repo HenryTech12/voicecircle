@@ -81,3 +81,10 @@ def test_supabase_url_and_auth_mode_are_normalized(monkeypatch):
     s = Settings(SUPABASE_URL=" abc.supabase.co/ ", AUTH_MODE=" Supabase ")
     assert s.SUPABASE_URL == "https://abc.supabase.co"
     assert s.AUTH_MODE == "supabase"
+
+
+def test_secret_env_values_are_stripped():
+    from app.config import Settings
+
+    s = Settings(LLM_API_KEY=' "sk-abc123"\n', LLM_PROVIDER=" openai ")
+    assert s.LLM_API_KEY == "sk-abc123" and s.LLM_PROVIDER == "openai"

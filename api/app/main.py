@@ -19,6 +19,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    from .services import storage
+
+    await storage.ensure_buckets()
     sched = None
     if settings.SCHEDULER_ENABLED:
         from .jobs import start_scheduler

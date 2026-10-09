@@ -364,3 +364,26 @@ async def test_openapi_lists_every_endpoint(client):
     ]
     for p in expected:
         assert p in paths, p
+
+
+async def test_init_db_adds_missing_columns_to_old_tables(tmp_path, monkeypatch):
+    """A database created by an older schema must be upgraded in place, not 500 on missing columns."""
+    import sqlite3
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    import app.db as db
+
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE practice_calls (id VARCHAR(36) PRIMARY KEY, circle_id VARCHAR(36))")
+    con.commit()
+    con.close()
+
+    eng = create_async_engine(f"sqlite+aiosqlite:///{path}")
+    monkeypatch.setattr(db, "engine", eng)
+    await db.init_db()
+    await eng.dispose()
+
+    cols = {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(practice_calls)")}
+    assert {"provider_call_id", "outcome", "score", "engine_state"} <= cols

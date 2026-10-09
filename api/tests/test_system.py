@@ -387,3 +387,31 @@ async def test_init_db_adds_missing_columns_to_old_tables(tmp_path, monkeypatch)
 
     cols = {r[1] for r in sqlite3.connect(path).execute("PRAGMA table_info(practice_calls)")}
     assert {"provider_call_id", "outcome", "score", "engine_state"} <= cols
+
+
+async def test_supabase_storage_creates_missing_bucket_and_retries(monkeypatch):
+    import httpx
+
+    from app.config import settings
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        if request.url.path.endswith("/bucket"):
+            return httpx.Response(200, json={"name": "voice-samples"})
+        if len([c for c in calls if "/object/" in c[1]]) == 1:
+            return httpx.Response(400, json={"error": "Bucket not found", "statusCode": "404"})
+        return httpx.Response(200, json={"Key": "ok"})
+
+    transport = httpx.MockTransport(handler)
+    real = httpx.AsyncClient
+    monkeypatch.setattr(storage.httpx, "AsyncClient", lambda **kw: real(transport=transport, **kw))
+    monkeypatch.setattr(settings, "STORAGE_BACKEND", "supabase")
+    monkeypatch.setattr(settings, "SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setattr(settings, "SUPABASE_SERVICE_ROLE_KEY", "sb_secret_abc")
+
+    path = await storage.save("voice-samples", b"RIFF", "wav")
+    assert path.startswith("voice-samples/")
+    assert ("POST", "/storage/v1/bucket") in calls
+    assert storage._sb_headers() == {"apikey": "sb_secret_abc"}

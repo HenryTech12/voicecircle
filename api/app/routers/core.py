@@ -14,7 +14,7 @@ from ..schemas import (
     AuthConfigOut, CircleBrief, CircleIn, CircleOut, CircleStats, DevLoginIn, MeOut, MemberIn, MemberOut,
     MemberPatch, OkOut, TokenOut, UserOut,
 )
-from ..services import notify, resemble, storage
+from ..services import notify, resemble, storage, voices
 
 router = APIRouter()
 
@@ -175,7 +175,7 @@ async def _delete_circle_data(session: AsyncSession, circle: Circle) -> None:
     await session.refresh(circle, ["members"])
     for m in circle.members:
         if m.voice:
-            await resemble.delete_voice(m.voice.resemble_voice_uuid)
+            await voices.delete_voice(m.voice.resemble_voice_uuid)
             await resemble.delete_identity(m.voice.resemble_identity_id)
             await storage.delete(m.voice.sample_path)
     for model in (PracticeCall, DetectionCheck, CompanionCall, Alert):
@@ -255,7 +255,7 @@ async def delete_member(member_id: str, user: User = Depends(get_current_user), 
     if used:
         raise APIError(409, "member_in_use", "This member has call history. Delete the circle instead, or keep the member.")
     if m.voice:
-        await resemble.delete_voice(m.voice.resemble_voice_uuid)
+        await voices.delete_voice(m.voice.resemble_voice_uuid)
         await resemble.delete_identity(m.voice.resemble_identity_id)
         await storage.delete(m.voice.sample_path)
         await session.delete(m.voice)

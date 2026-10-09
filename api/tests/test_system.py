@@ -459,3 +459,35 @@ async def test_live_companion_call_is_a_back_and_forth_conversation(client, auth
         assert "<Gather" in r.text or "<Hangup/>" in r.text
     c = (await client.get(f"{API}/companion-calls/{call_id}", headers=auth)).json()
     assert [t["speaker"] for t in c["transcript"]][:4] == ["hugh", "senior", "hugh", "senior"]
+
+
+async def test_fish_audio_clone_and_speak(monkeypatch):
+    import httpx
+
+    from app.config import settings
+    from app.services import fish, voices
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, dict(request.headers)))
+        if request.url.path == "/model" and request.method == "POST":
+            return httpx.Response(201, json={"_id": "voice123", "state": "trained"})
+        if request.url.path == "/v1/tts":
+            assert b'"reference_id":"voice123"' in request.content.replace(b" ", b"")
+            return httpx.Response(200, content=b"RIFFaudio")
+        return httpx.Response(200, json={})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(fish.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(settings, "MOCK_PROVIDERS", False)
+    monkeypatch.setattr(settings, "VOICE_PROVIDER", "fish")
+    monkeypatch.setattr(settings, "FISH_API_KEY", "fk_test")
+
+    vid = await voices.create_voice("VoiceCircle Ada", b"RIFFsample", "https://unused")
+    assert vid == "voice123"
+    assert await voices.synthesize("Hello Ada", vid) == b"RIFFaudio"
+    tts = [h for m, p, h in seen if p == "/v1/tts"][0]
+    assert tts["model"] == "s2.1-pro-free" and tts["authorization"] == "Bearer fk_test"
+    await voices.delete_voice(vid)
+    assert ("DELETE", "/model/voice123") in [(m, p) for m, p, _ in seen]

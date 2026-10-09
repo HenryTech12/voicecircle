@@ -24,6 +24,10 @@ services:
         sync: false
       - key: PUBLIC_BASE_URL       # this service's own URL, e.g. https://voicecircle-api.onrender.com
         sync: false
+      - key: VOICE_PROVIDER
+        value: fish
+      - key: FISH_API_KEY
+        sync: false
       - key: DATABASE_URL          # Supabase session pooler URL (postgresql+asyncpg://...:5432/postgres)
         sync: false
       # Twilio (only read when MOCK_PROVIDERS=false)

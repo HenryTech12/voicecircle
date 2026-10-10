@@ -329,17 +329,20 @@ async def test_scheduler_skips_disabled_seniors(client, auth):
 
 
 async def test_scheduler_starts_due_practice_calls(client, auth):
+    from datetime import timedelta
+
+    base = (datetime.now(timezone.utc) + timedelta(days=2)).replace(hour=10, minute=0, second=0, microsecond=0)
     data = await make_circle(client, auth)
     r = await client.post(
         f"{API}/circles/{data['circle']['id']}/practice-calls",
         json={"senior_member_id": data["senior"]["id"], "voice_member_id": data["contact"]["id"], "scenario": "stuck_abroad",
-              "difficulty": "easy", "scheduled_for": "2026-10-09T10:00:00Z"},
+              "difficulty": "easy", "scheduled_for": base.isoformat().replace("+00:00", "Z")},
         headers=auth,
     )
     pid = r.json()["id"]
-    early = await scheduler_tick(datetime(2026, 10, 9, 9, 0, tzinfo=timezone.utc))
+    early = await scheduler_tick(base - timedelta(hours=1))
     assert early["practice"] == []
-    due = await scheduler_tick(datetime(2026, 10, 9, 10, 1, tzinfo=timezone.utc))
+    due = await scheduler_tick(base + timedelta(minutes=1))
     assert due["practice"] == [pid]
     async with SessionLocal() as s:
         assert (await s.get(PracticeCall, pid)).status == "in_progress"
@@ -491,3 +494,13 @@ async def test_fish_audio_clone_and_speak(monkeypatch):
     assert tts["model"] == "s2.1-pro-free" and tts["authorization"] == "Bearer fk_test"
     await voices.delete_voice(vid)
     assert ("DELETE", "/model/voice123") in [(m, p) for m, p, _ in seen]
+
+
+async def test_tts_never_uses_default_voice_without_a_clone(monkeypatch):
+    from app.services import calls, voices
+
+    async def must_not_run(*a, **k):
+        raise AssertionError("synthesize must not be called without a cloned voice")
+
+    monkeypatch.setattr(voices, "synthesize", must_not_run)
+    assert await calls._tts_url("Hello", None) is None

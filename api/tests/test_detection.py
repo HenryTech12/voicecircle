@@ -124,3 +124,23 @@ def test_decide_matrix():
     assert decide(0.1, None, "Alex")[0] == "unsure"
     for v in decide(0.9, 0.9, "Alex"), decide(0.1, 0.9, "Alex"):
         assert "Alex" in v[1]
+
+
+async def test_detection_provider_out_of_credits_fails_gracefully(client, auth, monkeypatch):
+    from app.services import resemble
+
+    async def boom(*a, **k):
+        raise resemble.ResembleError("detect failed (402): insufficient_balance", unavailable=True)
+
+    monkeypatch.setattr(resemble, "detect_synthetic", boom)
+    sample = await make_circle(client, auth)
+    r = await client.post(
+        f"{API}/circles/{sample['circle']['id']}/detections",
+        headers=auth,
+        files={"file": ("clip.wav", wav_bytes(), "audio/wav")},
+        data={"claimed_member_id": sample["senior"]["id"]},
+    )
+    assert r.status_code == 202, r.text
+    got = (await client.get(f"{API}/detections/{r.json()['id']}", headers=auth)).json()
+    assert got["status"] == "failed" and "temporarily unavailable" in got["error"]
+

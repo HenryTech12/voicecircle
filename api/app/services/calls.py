@@ -26,13 +26,21 @@ def _ms_since(start: datetime | None) -> int:
 
 
 async def _tts_url(text: str, voice_uuid: str | None) -> str | None:
-    """Synthesize text in the cloned voice and return a fetchable URL (None on failure)."""
+    """Synthesize text in the *cloned* voice and return a fetchable URL.
+
+    Returns None (so the caller uses Twilio's built-in voice) when there is no cloned voice or synthesis fails.
+    Never synthesizes without a cloned voice: the provider's default voice would pass for the family member."""
+    if not voice_uuid:
+        log.warning("No cloned voice for this call: using Twilio's standard voice")
+        return None
     try:
         wav = await voices.synthesize(text, voice_uuid)
         path = await storage.save("call-audio", wav, "wav")
-        return await storage.signed_url(path)
+        url = await storage.signed_url(path)
+        log.info("Spoke line in cloned voice %s", voice_uuid[:8])
+        return url
     except Exception as e:
-        log.warning("TTS failed, falling back to Twilio <Say>: %s", e)
+        log.warning("Cloned-voice TTS failed (voice=%s), falling back to Twilio <Say>: %s", voice_uuid[:8], e)
         return None
 
 
@@ -59,8 +67,11 @@ async def start_practice_call(call_id: str) -> None:
             call.scenario, call.difficulty, senior.display_name, contact.display_name, contact.personal_facts or senior.personal_facts or []
         )
         opener_url = await _tts_url(opener, voice_uuid)
+        # Record which voice this call really uses, so a fallback is visible instead of silent.
+        voice_mode = "cloned" if opener_url else "standard"
+        log.info("Practice call %s starting with %s voice (member=%s)", call.id[:8], voice_mode, contact.display_name)
         call.status = "dialing"
-        call.engine_state = {"phase": "dialing", "opener": opener, "opener_url": opener_url, "transcribing": False}
+        call.engine_state = {"phase": "dialing", "opener": opener, "opener_url": opener_url, "transcribing": False, "voice_mode": voice_mode}
         await s.commit()
         try:
             ccid = await twilio.dial(senior.phone_e164, {"kind": "practice", "id": call.id})

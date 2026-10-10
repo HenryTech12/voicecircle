@@ -28,7 +28,14 @@ SYNTH = "https://f.cluster.resemble.ai/synthesize"
 
 
 class ResembleError(Exception):
-    pass
+    def __init__(self, message: str, unavailable: bool = False):
+        super().__init__(message)
+        # True when the provider can't serve us at all (no credits, bad key, no plan access).
+        self.unavailable = unavailable
+
+
+def _fail(what: str, r: "httpx.Response") -> ResembleError:
+    return ResembleError(f"{what} failed ({r.status_code}): {r.text[:300]}", unavailable=r.status_code in (401, 402, 403))
 
 
 def _h(json_body: bool = True) -> dict:
@@ -137,13 +144,13 @@ async def detect_synthetic(wav_bytes: bytes, filename: str = "clip.wav") -> floa
             return settings.DETECT_FAKE_THRESHOLD
         return 0.07
     if not settings.RESEMBLE_API_KEY:
-        raise ResembleError("Deepfake detection needs RESEMBLE_API_KEY, which isn't configured")
+        raise ResembleError("Deepfake detection needs RESEMBLE_API_KEY, which isn't configured", unavailable=True)
     async with httpx.AsyncClient(timeout=120) as c:
         r = await c.post(
             f"{APP}/detect", headers=_h(json_body=False), files={"file": (filename, wav_bytes, "audio/wav")}
         )
         if r.status_code >= 400:
-            raise ResembleError(f"detect failed ({r.status_code}): {r.text[:300]}")
+            raise _fail("detect", r)
         item = r.json().get("item") or {}
         det_uuid = item.get("uuid")
         for _ in range(40):  # up to ~60 s
@@ -182,7 +189,7 @@ async def verify_speaker(identity_id: str | None, audio_url: str, filename: str 
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post(f"{APP}/identity/search", headers=_h(), json={"url": audio_url})
         if r.status_code >= 400:
-            raise ResembleError(f"identity search failed ({r.status_code}): {r.text[:300]}")
+            raise _fail("identity search", r)
         matches = (r.json().get("item") or {})
         m = matches.get(identity_id)
         if not m:

@@ -54,7 +54,14 @@ async def run_detection(check_id: str) -> None:
             synthetic, match = await asyncio.gather(
                 resemble.detect_synthetic(wav, d.original_filename or "clip.wav"),
                 resemble.verify_speaker(identity, url, d.original_filename or ""),
+                return_exceptions=True,
             )
+            if isinstance(match, Exception):
+                # Speaker matching is a bonus signal: carry on without it (verdict becomes "unsure" at worst).
+                log.warning("speaker match unavailable: %s", match)
+                match = None
+            if isinstance(synthetic, Exception):
+                raise synthetic
             d.synthetic_score = round(float(synthetic), 3)
             d.speaker_match_score = round(float(match), 3) if match is not None else None
             d.verdict, d.explanation = decide(d.synthetic_score, d.speaker_match_score, member.display_name)
@@ -68,9 +75,17 @@ async def run_detection(check_id: str) -> None:
                 )
             await notify.audit(s, "detection.completed", d.circle_id, d.created_by, detection_id=d.id, verdict=d.verdict)
         except Exception as e:
-            log.exception("detection failed")
+            unavailable = isinstance(e, resemble.ResembleError) and e.unavailable
+            if unavailable:
+                log.warning("detection provider unavailable: %s", e)
+            else:
+                log.exception("detection failed")
             d.status = "failed"
-            d.error = "We couldn't check this recording. Please try again or use a different file."
+            d.error = (
+                "Voice checking is temporarily unavailable. Please try again later."
+                if unavailable
+                else "We couldn't check this recording. Please try again or use a different file."
+            )
             d.explanation = str(e)[:300]
         await s.commit()
 
